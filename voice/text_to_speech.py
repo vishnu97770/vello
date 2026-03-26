@@ -1,50 +1,46 @@
-# text_to_speech Module...now it's time for VELLO
+import subprocess
+import tempfile
+import os
 
-
-# import pyttsx3
-
-# class TextToSpeech:
-
-#     def __init__(self):
-#         self.engine = pyttsx3.init()
-#         self.engine.setProperty("rate", 170)
-
-#     def speak(self, text):
-#         print("VELLO:", text)
-#         self.engine.say(text)
-#         self.engine.runAndWait()
-
-
-#  For slow down the voice
-
-
-# Rate	Speed
-# 200	fast
-# 170  	normal
-# 140 	slower (recommended)
-# 120	very slow
-
-
-import pyttsx3
 
 class TextToSpeech:
 
     def __init__(self):
-        self.engine = pyttsx3.init()
-
-        # get available voices
-        voices = self.engine.getProperty("voices")
-
-        # choose English voice
-        self.engine.setProperty("voice", voices[10].id)
-
-        # slower speaking rate
-        self.engine.setProperty("rate", 140)
-
-        # volume
-        self.engine.setProperty("volume", 1)
+        self.model = "data/models/en_US-lessac-medium.onnx"
 
     def speak(self, text):
+
         print("VELLO:", text)
-        self.engine.say(text)
-        self.engine.runAndWait()
+
+        try:
+            # create temp wav file
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                wav_file = f.name
+
+            # 🔥 faster + smoother speech
+            command = [
+                "piper",
+                "--model", self.model,
+                "--output_file", wav_file,
+                "--length_scale", "0.9",     # speed up speech
+                "--noise_scale", "0.6",      # smoother voice
+                "--noise_w", "0.8"
+            ]
+
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+
+            process.communicate(input=text.encode())
+
+            # 🔥 faster playback (quiet + fast)
+            os.system(f"aplay -q {wav_file}")
+
+            # cleanup temp file
+            os.remove(wav_file)
+
+        except Exception as e:
+            print("TTS Error:", e)
