@@ -1,5 +1,6 @@
 import speech_recognition as sr
 
+
 class SpeechToText:
 
     def __init__(self):
@@ -8,8 +9,18 @@ class SpeechToText:
 
     def listen(self):
         with self.microphone as source:
-            print("🎤 Speak a command...")
-            audio = self.recognizer.listen(source)
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.3)
+            print("🎤 Speak...")
+
+            try:
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=5,
+                    phrase_time_limit=6
+                )
+            except sr.WaitTimeoutError:
+                # silence — return None, don't crash
+                return None
 
         try:
             text = self.recognizer.recognize_google(audio)
@@ -17,5 +28,8 @@ class SpeechToText:
             return text
 
         except sr.UnknownValueError:
-            print("Sorry, I didn't understand.")
+            return None
+
+        except sr.RequestError:
+            print("Speech recognition service unavailable")
             return None
