@@ -1,121 +1,59 @@
 import re
 
-
 class IntentEngine:
     """
     Rule-based intent classifier — works fully offline, no API needed.
+    Now with flexible keyword matching and multi-step support.
     """
 
-    def classify(self, command, context):
+    APP_KEYWORDS = {
+        "chrome":      ["chrome", "google chrome", "browser"],
+        "google":      ["google", "search engine"],
+        "terminal":     ["terminal", "shell", "console", "command line"],
+        "vscode":       ["vscode", "vs code", "code editor", "visual studio code"],
+        "libreoffice":  ["libreoffice", "office", "writer", "calc"],
+        "files":        ["files", "file manager", "nautilus"],
+        "vlc":          ["vlc", "media player"],
+        "spotify":      ["spotify", "music player"],
+    }
 
-        cmd        = command.lower().strip()
+    def classify(self, command, context):
+        cmd = command.lower().strip()
         active_app = context.get("active_app") or ""
+
+        # ── Goodbye / Exit ───────────────────────────────────────
+        if any(w in cmd for w in ["goodbye", "bye", "exit", "stop", "quit"]):
+            return {"intent": "exit", "app": None, "target": None, "chain": []}
 
         # ── Multi-step: "open X and do Y" ─────────────────────────
         if " and " in cmd:
             return self._handle_chain(cmd, context)
 
-        # ── Open ──────────────────────────────────────────────────
-        if cmd.startswith("open "):
-            target = cmd.replace("open", "").strip()
-
-            # Websites
-            websites = [
-                "youtube", "google", "github", "gmail",
-                "instagram", "twitter", "facebook", "linkedin",
-                "stackoverflow", "wikipedia", "netflix", "reddit"
-            ]
-            for site in websites:
-                if site in target:
-                    return {
-                        "intent": "open_url",
-                        "app":    active_app,
-                        "target": f"https://www.{site}.com",
-                        "chain":  []
-                    }
-
-            # Known apps
-            apps = [
-                "chrome", "firefox", "terminal", "vscode",
-                "vs code", "files", "calculator", "settings",
-                "vlc", "spotify", "discord", "zoom",
-                "telegram", "notepad", "gedit", "file manager"
-            ]
-            for app in apps:
-                if app in target:
+        # ── Open Apps (Flexible Matching) ──────────────────────────
+        if "open" in cmd or "launch" in cmd or "start" in cmd:
+            for app, keywords in self.APP_KEYWORDS.items():
+                if any(kw in cmd for kw in keywords):
                     return {
                         "intent": "open_app",
                         "app":    app,
                         "target": None,
                         "chain":  []
                     }
+            
+            # Fallback for unknown apps
+            target = re.sub(r"(open|launch|start)", "", cmd).strip()
+            if target:
+                return {"intent": "open_app", "app": target, "target": None, "chain": []}
 
-            # Folder
-            if "folder" in target:
-                folder = target.replace("folder", "").strip()
-                return {
-                    "intent": "open_folder",
-                    "app":    active_app,
-                    "target": folder if folder else None,
-                    "chain":  []
-                }
-
-            # File
-            if "file" in target:
-                file_name = target.replace("file", "").strip()
-                return {
-                    "intent": "open_file",
-                    "app":    active_app,
-                    "target": file_name if file_name else None,
-                    "chain":  []
-                }
-
-            # Unknown — try running directly
-            return {
-                "intent": "open_app",
-                "app":    target,
-                "target": None,
-                "chain":  []
-            }
-
-        # ── Play music ────────────────────────────────────────────
-        if any(w in cmd for w in ["play ", "play song", "play music"]):
-            song = re.sub(r"play (song |music )?", "", cmd).strip()
-            return {
-                "intent": "play_music",
-                "app":    active_app,
-                "target": song if song else None,
-                "chain":  []
-            }
-
-        # ── YouTube ───────────────────────────────────────────────
-        if "youtube" in cmd:
-            query = re.sub(r"(youtube|search|play|open|on)", "", cmd).strip()
-            return {
-                "intent": "play_music",
-                "app":    active_app,
-                "target": query if query else None,
-                "chain":  []
-            }
-
-        # ── Web search ────────────────────────────────────────────
-        if any(w in cmd for w in ["search ", "google ", "look up "]):
-            query = re.sub(r"(search|google|look up)", "", cmd).strip()
-            return {
-                "intent": "search_web",
-                "app":    active_app,
-                "target": query if query else None,
-                "chain":  []
-            }
-
-        # ── System controls ───────────────────────────────────────
+        # ── System controls (Whole Word Matching) ─────────────────
         system_keywords = [
             "time", "date", "volume up", "volume down",
             "mute", "screenshot", "battery", "cpu",
             "shutdown", "shut down", "restart", "reboot", "lock"
         ]
         for kw in system_keywords:
-            if kw in cmd:
+            # Match whole word only to avoid 'update' matching 'date'
+            if re.search(rf"\b{kw}\b", cmd):
                 return {
                     "intent": "system_control",
                     "app":    None,
@@ -123,30 +61,39 @@ class IntentEngine:
                     "chain":  []
                 }
 
-        # ── Close app ─────────────────────────────────────────────
-        if cmd.startswith("close "):
-            app = cmd.replace("close", "").strip()
+        # ── Web search ────────────────────────────────────────────
+        if any(w in cmd for w in ["search", "google", "look up", "find"]):
+            query = re.sub(r"(search|google|look up|find|for)", "", cmd).strip()
             return {
-                "intent": "close_app",
-                "app":    app,
-                "target": None,
+                "intent": "search_web",
+                "app":    active_app,
+                "target": query if query else None,
                 "chain":  []
             }
 
-        # ── Context-aware follow-ups (browser active) ─────────────
-        if active_app in ["chrome", "firefox", "browser"]:
-            websites = [
-                "youtube", "google", "github", "gmail",
-                "instagram", "twitter", "facebook", "netflix"
-            ]
-            for site in websites:
-                if site in cmd:
-                    return {
-                        "intent": "open_url",
-                        "app":    active_app,
-                        "target": f"https://www.{site}.com",
-                        "chain":  []
-                    }
+        # ── Play music ────────────────────────────────────────────
+        if any(w in cmd for w in ["play", "song", "music"]):
+            song = re.sub(r"(play|song|music|on youtube)", "", cmd).strip()
+            return {
+                "intent": "play_music",
+                "app":    active_app,
+                "target": song if song else None,
+                "chain":  []
+            }
+
+        # ── Terminal Command detection (More Specific) ─────────────
+        # Only if "run" or "execute" is used, OR if terminal is active AND it looks like a command
+        is_terminal_command = any(w in cmd for w in ["run ", "execute ", "sudo ", "apt ", "ls ", "cd ", "mkdir "])
+        
+        if is_terminal_command or (active_app == "terminal" and len(cmd.split()) > 1):
+            target = re.sub(r"(run|execute|command)", "", cmd).strip()
+            if target:
+                return {
+                    "intent": "terminal_run",
+                    "app":    "terminal",
+                    "target": target,
+                    "chain":  []
+                }
 
         # ── Fallback → AI ─────────────────────────────────────────
         return {
@@ -155,8 +102,6 @@ class IntentEngine:
             "target": None,
             "chain":  []
         }
-
-    # ── CHAIN HANDLER ─────────────────────────────────────────────
 
     def _handle_chain(self, cmd, context):
         """
@@ -176,4 +121,3 @@ class IntentEngine:
 
         first["chain"] = chain
         return first
-    
