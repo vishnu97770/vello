@@ -1,279 +1,707 @@
 from core.response_generator import ResponseGenerator
+from vello.nlp.normalizer import Normalizer
 import webbrowser
 import subprocess
 import os
+import re
 import datetime
 import psutil
+import logging
+
+logger = logging.getLogger(__name__)
+_normalizer = Normalizer()
+
+
+class _DummyContext:
+    """Fallback when no context is provided."""
+    active_app     = None
+    active_task    = None
+    pending_action = None
+    last_subject   = None
+
+    def set_app(self, x):      self.active_app  = x.lower()
+    def set_task(self, x):     self.active_task = x.lower()
+    def set_pending(self, x):  self.pending_action = x
+    def clear_pending(self):   self.pending_action = None
+    def get_context_summary(self):
+        return {"active_app": self.active_app, "active_task": self.active_task,
+                "pending": self.pending_action, "recent": []}
+
+
+class _DummyTTS:
+    def speak(self, text): print(f"[TTS-dummy]: {text}")
+
 
 class CommandRouter:
     """
-    Receives structured intent from IntentEngine and executes actions.
-    Now with fun responses, multi-step flows, and safety checks.
+    Routes intents to the appropriate handler.
+    Every handler returns a non-empty string.
+    execute() is the primary public API.
+    route() is kept for backward compatibility.
     """
 
-    APP_COMMANDS = {
-        "chrome":        "google-chrome",
-        "browser":       "google-chrome",
-        "google":        "google-chrome",
-        "firefox":       "firefox",
-        "terminal":      "gnome-terminal",
-        "vscode":        "code",
-        "vs code":       "code",
-        "files":         "nautilus",
-        "file manager":  "nautilus",
-        "calculator":    "gnome-calculator",
-        "settings":      "gnome-control-center",
-        "vlc":           "vlc",
-        "spotify":       "spotify",
-        "discord":       "discord",
-        "zoom":          "zoom",
-        "telegram":      "telegram-desktop",
-        "gedit":         "gedit",
-        "notepad":       "gedit",
-        "screenshot":    "gnome-screenshot",
-        "libreoffice":   "libreoffice",
-        "writer":        "libreoffice --writer",
+    DANGEROUS_COMMANDS = [
+        "rm -rf", "sudo rm", "mkfs", "dd if=",
+        "> /dev/sda", ":(){ :|:& };:",
+    ]
+
+    OVERRIDES_PENDING = {
+        "open_app", "open_url", "play_music", "search_web",
+        "system_control", "terminal_run", "music_stop",
+        "music_pause", "music_resume", "wifi_on", "wifi_off",
+        "get_time", "get_date",
+        # new intent names
+        "music_play", "web_search", "volume_up", "volume_down",
+        "mute", "screenshot", "shutdown", "restart", "lock_screen",
+        "goodbye", "greeting",
     }
 
-    DANGEROUS_COMMANDS = ["rm -rf", "sudo rm", "mkfs", "dd if=", "> /dev/sda", ":(){ :|:& };:"]
+    def __init__(self, tts=None, context=None, env=None, audio_ctrl=None,
+                 music=None, reminders=None, network=None,
+                 clipboard=None, packages=None, app_registry=None,
+                 stt=None):
+        self.tts          = tts or _DummyTTS()
+        self.context      = context or _DummyContext()
+        self.response     = ResponseGenerator()
+        self.env          = env
+        self.audio        = audio_ctrl
+        self.music        = music
+        self.reminders    = reminders
+        self.network      = network
+        self.clipboard    = clipboard
+        self.packages     = packages
+        self.app_registry = app_registry
+        self.stt          = stt
 
-    def __init__(self, tts, context):
-        self.tts      = tts
-        self.context  = context
-        self.response = ResponseGenerator()
+    # ── Primary public API ─────────────────────────────────────────
 
-    def route(self, intent_data, original_command=""):
-        intent  = intent_data.get("intent")
-        app     = intent_data.get("app")
-        target  = intent_data.get("target")
-        chain   = intent_data.get("chain", [])
+    def execute(self, intent, command: str = "") -> str:
+        """
+        Route intent → return a non-empty response string.
+        Never calls tts.speak() — the caller is responsible for speaking.
+        intent may be a dict (from IntentEngine.classify) or a plain string.
+        """
+        print(f"[Vello] execute() called — intent={intent!r}, command={command!r}")
 
-        # Handle pending actions first if any
-        if self.context.pending_action:
-            return self._handle_pending(self.context.pending_action, original_command)
+        if isinstance(intent, dict):
+            intent_data = intent
+        else:
+            intent_data = {"intent": str(intent), "app": None,
+                           "target": None, "chain": []}
 
-        # Execute primary intent
-        result = self._execute(intent, app, target, original_command)
+        ctx_intent = intent_data.get("intent")
 
-        # Execute chained actions (multi-step commands)
-        for step in chain:
-            self._execute(
+        # Pending action handling
+        if self.context.pending_action and ctx_intent not in self.OVERRIDES_PENDING:
+            result = self._handle_pending_return(
+                self.context.pending_action, command)
+        else:
+            if self.context.pending_action and ctx_intent in self.OVERRIDES_PENDING:
+                self.context.clear_pending()
+            result = self._dispatch(
+                ctx_intent,
+                intent_data.get("app"),
+                intent_data.get("target"),
+                command,
+            )
+
+        # Handle chained commands (e.g. "open chrome and search python")
+        for step in intent_data.get("chain", []):
+            step_result = self._dispatch(
                 step.get("intent"),
                 step.get("app") or self.context.active_app,
                 step.get("target"),
-                original_command
+                command,
             )
-        
+            # Speak chain steps via tts so they happen before the final speak
+            if step_result:
+                self.tts.speak(step_result)
+
+        return result or "Done."
+
+    # ── Backward-compatible route() ────────────────────────────────
+
+    def route(self, intent_data, original_command=""):
+        """Legacy API: execute + speak the result via self.tts."""
+        result = self.execute(intent_data, original_command)
+        if result and result != "USE_AI":
+            self.tts.speak(result)
         return result
 
-    def _execute(self, intent, app, target, original_command=""):
+    # ── Core dispatcher — always returns a string ──────────────────
 
-        if intent == "open_app":
-            return self._open_app(app)
+    def _dispatch(self, intent, app, target, command="") -> str:
 
-        elif intent == "open_url":
-            self._open_url(target)
+        # ── Greeting ──────────────────────────────────────────────
+        if intent == "greeting":
+            return _normalizer.get_greeting_response()
 
-        elif intent == "play_music":
-            self._play_music(target)
+        # ── Goodbye ───────────────────────────────────────────────
+        if intent in ("goodbye", "exit"):
+            return "Goodbye. Have an awesome day!"
 
-        elif intent == "search_web":
-            self._search_web(target)
-
-        elif intent == "open_folder":
-            self._open_folder(target)
-
-        elif intent == "open_file":
-            self._open_file(target)
-
-        elif intent == "system_control":
-            self._system_control(original_command)
-
-        elif intent == "terminal_run":
-            self._run_terminal_command(target)
-
-        elif intent == "clarify":
-            question = f"Could you be more specific? What {target} should I use?"
-            self.tts.speak(question)
-            self.context.set_pending(target)
-
-        elif intent == "ask_ai":
+        # ── AI fallback ───────────────────────────────────────────
+        if intent in ("ai_fallback", "ask_ai"):
             return "USE_AI"
 
-        else:
-            self.tts.speak("I am not sure how to handle that. Please try again.")
+        # ── Time / date ───────────────────────────────────────────
+        if intent == "get_time":
+            t = datetime.datetime.now().strftime("%I:%M %p")
+            return f"The time is {t}"
 
-    def _handle_pending(self, pending_type, command):
+        if intent == "get_date":
+            d = datetime.datetime.now().strftime("%A, %B %d, %Y")
+            return f"Today is {d}"
+
+        # ── Volume control (direct intents) ───────────────────────
+        if intent == "volume_up":
+            if self.audio:
+                return self.audio.volume_up()
+            os.system("wpctl set-volume @DEFAULT_AUDIO_SINK@ 10%+ 2>/dev/null"
+                      " || pactl set-sink-volume @DEFAULT_SINK@ +10%")
+            return "Volume increased"
+
+        if intent == "volume_down":
+            if self.audio:
+                return self.audio.volume_down()
+            os.system("wpctl set-volume @DEFAULT_AUDIO_SINK@ 10%- 2>/dev/null"
+                      " || pactl set-sink-volume @DEFAULT_SINK@ -10%")
+            return "Volume decreased"
+
+        if intent == "mute":
+            if self.audio:
+                return self.audio.mute_toggle()
+            os.system("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null"
+                      " || pactl set-sink-mute @DEFAULT_SINK@ toggle")
+            return "Muted"
+
+        # ── System info (direct intents) ──────────────────────────
+        if intent == "battery":
+            b = psutil.sensors_battery()
+            if b:
+                status = "plugged in" if b.power_plugged else "running on battery"
+                return f"Battery is at {int(b.percent)} percent, {status}"
+            return "Battery information not available"
+
+        if intent == "cpu_usage":
+            usage = psutil.cpu_percent(interval=1)
+            return f"CPU usage is at {usage} percent"
+
+        if intent == "memory_usage":
+            return self._system_info("memory")
+
+        if intent == "disk_usage":
+            return self._system_info("disk")
+
+        if intent == "temperature":
+            return self._system_info("temperature")
+
+        if intent == "network_usage":
+            return self._system_info("network_usage")
+
+        if intent == "uptime":
+            return self._system_info("uptime")
+
+        if intent == "processes":
+            return self._system_info("processes")
+
+        # ── Screenshot ────────────────────────────────────────────
+        if intent == "screenshot":
+            return self._take_screenshot()
+
+        # ── Shutdown / restart / lock ─────────────────────────────
+        if intent == "shutdown":
+            os.system("shutdown now")
+            return "Shutting down"
+
+        if intent == "restart":
+            os.system("reboot")
+            return "Restarting"
+
+        if intent == "lock_screen":
+            self._lock_screen()
+            return "Locking the screen"
+
+        # ── App opening ───────────────────────────────────────────
+        if intent == "open_app":
+            return self._open_app(app or self._extract_app_name(command))
+
+        # ── Web / search ──────────────────────────────────────────
+        if intent == "open_url":
+            return self._open_url(target)
+
+        if intent in ("search_web", "web_search"):
+            return self._search_web(target or self._extract_search_query(command))
+
+        # ── Music ─────────────────────────────────────────────────
+        if intent in ("play_music", "music_play"):
+            return self._play_music(target or self._extract_music_query(command))
+
+        if intent == "music_stop":
+            if self.music:
+                result = self.music.stop()
+                return result if result else "Music stopped"
+            return "Music player not available"
+
+        if intent == "music_pause":
+            if self.music:
+                result = self.music.pause()
+                return result if result else "Music paused"
+            return "Music player not available"
+
+        if intent == "music_resume":
+            if self.music:
+                result = self.music.resume()
+                return result if result else "Music resumed"
+            return "Music player not available"
+
+        if intent == "music_status":
+            if self.music:
+                result = self.music.status()
+                return result if result else "Nothing playing right now"
+            return "Music player not available"
+
+        # ── System control (legacy) ───────────────────────────────
+        if intent == "system_control":
+            return self._system_control(command)
+
+        # ── System info (legacy) ──────────────────────────────────
+        if intent == "system_info":
+            return self._system_info(target)
+
+        # ── Reminders ─────────────────────────────────────────────
+        if intent == "set_reminder":
+            reminder_text = target or self._extract_reminder_query(command)
+            return (self.reminders.set_reminder(reminder_text)
+                    if self.reminders else "Reminders not available")
+
+        if intent == "set_timer":
+            return (self.reminders.set_timer(target or command)
+                    if self.reminders else "Timers not available")
+
+        if intent == "list_reminders":
+            return (self.reminders.list_reminders()
+                    if self.reminders else "Reminders not available")
+
+        # ── Network ───────────────────────────────────────────────
+        if intent == "wifi_on":
+            return self.network.wifi_on() if self.network else "Network control unavailable"
+
+        if intent == "wifi_off":
+            return self.network.wifi_off() if self.network else "Network control unavailable"
+
+        if intent == "list_networks":
+            return self.network.list_networks() if self.network else "Network control unavailable"
+
+        if intent == "connect_wifi":
+            return (self.network.connect_to(target)
+                    if self.network else "Network control unavailable")
+
+        if intent == "get_ip":
+            return self.network.get_ip() if self.network else "Network control unavailable"
+
+        if intent == "check_internet":
+            return (self.network.check_connection()
+                    if self.network else "Network control unavailable")
+
+        # ── Clipboard ─────────────────────────────────────────────
+        if intent == "clipboard_read":
+            if not self.clipboard:
+                return "Clipboard not available"
+            text = self.clipboard.read()
+            if text:
+                preview = text[:100] + (" and more" if len(text) > 100 else "")
+                return f"Your clipboard contains: {preview}"
+            return "Your clipboard is empty"
+
+        if intent == "clipboard_write":
+            if not self.clipboard or not target:
+                return "What should I copy?"
+            return self.clipboard.write(target)
+
+        # ── Package management ────────────────────────────────────
+        if intent == "package_install":
+            if not self.packages:
+                return "Package manager not available"
+            return self.packages.install(target or "")
+
+        if intent == "package_remove":
+            if not self.packages:
+                return "Package manager not available"
+            return self.packages.remove(target or "")
+
+        if intent == "system_update":
+            if not self.packages:
+                return "Package manager not available"
+            return self.packages.update_system()
+
+        # ── Terminal ──────────────────────────────────────────────
+        if intent == "terminal_run":
+            return self._run_terminal_command(target)
+
+        # ── Misc ──────────────────────────────────────────────────
+        if intent == "open_folder":
+            return self._open_folder(target)
+
+        if intent == "open_file":
+            return self._open_file(target)
+
+        if intent == "clarify":
+            self.context.set_pending(target)
+            return f"Could you be more specific? What {target} should I use?"
+
+        return "I am not sure how to handle that. Please try again."
+
+    # ── Pending action handler ────────────────────────────────────
+
+    def _handle_pending_return(self, pending_type, command) -> str:
         self.context.clear_pending()
-        
         if pending_type == "search_query":
-            self._search_web(command)
-        elif pending_type == "terminal_command":
-            self._run_terminal_command(command)
-        elif pending_type == "coding_task":
-            self.tts.speak(f"Awesome! Let's get to work on {command}. I've opened VS Code for you.")
-        elif pending_type == "work_task":
-            self.tts.speak(f"Got it! Opening LibreOffice for your work on {command}.")
-        else:
-            self.tts.speak(f"Processing your request for {command}")
+            return self._search_web(command)
+        if pending_type == "terminal_command":
+            return self._run_terminal_command(command)
+        if pending_type == "coding_task":
+            return f"Opening VS Code for {command}"
+        if pending_type == "work_task":
+            return f"Opening LibreOffice for {command}"
+        return f"Processing your request for {command}"
 
-    # ── ACTION HANDLERS ───────────────────────────────────────────
+    # ── Smart query extractors ────────────────────────────────────
 
-    def _open_app(self, app_name):
+    def _extract_app_name(self, command: str) -> str:
+        """Pull the app name from raw command text."""
+        cmd = command.lower().strip()
+        for prefix in ("open ", "launch ", "start ", "run "):
+            if cmd.startswith(prefix):
+                return cmd[len(prefix):].strip()
+        m = re.search(r'\b(?:open|launch|start|run)\s+(\S+(?:\s+\S+)?)', cmd)
+        if m:
+            return m.group(1).strip()
+        return cmd
+
+    def _extract_search_query(self, command: str) -> str:
+        """Pull the search query from raw command text."""
+        cmd = command.lower().strip()
+        for prefix in ("search for ", "search ", "google ", "look up ",
+                       "find ", "look for "):
+            if prefix in cmd:
+                return cmd.split(prefix, 1)[1].strip()
+        return cmd
+
+    def _extract_music_query(self, command: str) -> str:
+        """Pull the song/artist from raw command text."""
+        cmd = command.lower().strip()
+        for prefix in ("play ", "put on ", "listen to "):
+            if prefix in cmd:
+                after = cmd.split(prefix, 1)[1].strip()
+                # strip trailing filler
+                after = re.sub(r'\s*(?:for me|please)\s*$', '', after).strip()
+                return after
+        return cmd
+
+    def _extract_reminder_query(self, command: str) -> str:
+        """Pull reminder content from raw command text."""
+        cmd = command.lower().strip()
+        m = re.search(r'\bremind\s+me\s+(?:to\s+)?(.+)', cmd)
+        if m:
+            return m.group(1).strip()
+        return cmd
+
+    # ── App opening ───────────────────────────────────────────────
+
+    def _open_app(self, app_name) -> str:
         if not app_name:
-            self.tts.speak("Which application should I open?")
             self.context.set_pending("app_name")
-            return
+            return "Which application should I open?"
 
         app_key = app_name.lower()
-        cmd = self.APP_COMMANDS.get(app_key)
+
+        # Try dynamic registry first
+        cmd = None
+        if self.app_registry:
+            from vello.app_registry import find_app
+            cmd = find_app(app_key)
+
+        # Fallback to hardcoded map
+        if not cmd:
+            cmd = _HARDCODED_APPS.get(app_key)
 
         if cmd:
-            # Fun responses
-            response_key = f"open_{app_key}" if f"open_{app_key}" in self.response.RESPONSES else "generic_success"
-            self.tts.speak(self.response.get_response(response_key))
-            
             subprocess.Popen(
                 cmd.split(),
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.DEVNULL,
             )
             self.context.set_app(app_name)
 
-            # Multi-step logic
+            # Multi-step follow-ups — combine into single response
             if app_key in ["chrome", "google"]:
-                import time
-                time.sleep(1)
-                self.tts.speak(self.response.get_response("search_ask"))
                 self.context.set_pending("search_query")
+                return f"Opening {app_name}. What would you like to search?"
             elif app_key == "terminal":
-                import time
-                time.sleep(1)
-                self.tts.speak(self.response.get_response("terminal_ask"))
                 self.context.set_pending("terminal_command")
+                return f"Opening terminal. What command should I run?"
             elif app_key == "vscode":
-                import time
-                time.sleep(1)
-                self.tts.speak(self.response.get_response("vscode_greet"))
                 self.context.set_pending("coding_task")
+                return f"VS Code is ready. What are you coding today?"
             elif app_key == "libreoffice":
-                import time
-                time.sleep(1)
-                self.tts.speak(self.response.get_response("libreoffice_greet"))
                 self.context.set_pending("work_task")
-
+                return f"Opening LibreOffice. What would you like to work on?"
+            return f"Opening {app_name}"
         else:
-            self.tts.speak(f"Trying to open {app_name}")
+            # Try running the app name directly
             try:
                 subprocess.Popen(
-                    [app_name.lower()],
+                    [app_key],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stderr=subprocess.DEVNULL,
                 )
                 self.context.set_app(app_name)
+                return f"Opening {app_name}"
             except FileNotFoundError:
-                self.tts.speak(f"Sorry, I could not find {app_name} on your system.")
+                return f"I couldn't find {app_name}. Is it installed?"
 
-    def _run_terminal_command(self, command):
+    # ── Terminal ──────────────────────────────────────────────────
+
+    def _run_terminal_command(self, command) -> str:
         if not command:
-            self.tts.speak("What command should I run?")
             self.context.set_pending("terminal_command")
-            return
-
-        # Safety Check
+            return "What command should I run?"
         for danger in self.DANGEROUS_COMMANDS:
             if danger in command.lower():
-                self.tts.speak("Whoa there! That command looks dangerous. I can't execute that for safety reasons. 🛑")
-                return
-
-        self.tts.speak(self.response.get_response("execute_command"))
+                return "That command looks dangerous. I cannot execute it for safety reasons."
         try:
-            # Execute in a new terminal or just run it? 
-            # User said "Open terminal" then "Run command". Usually means running it IN a terminal or just executing it.
-            # We'll execute it and show the result if possible, or just run it in background.
-            subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{command}; exec bash"])
-        except Exception as e:
-            self.tts.speak(f"Oops! Something went wrong while running that command.")
+            subprocess.Popen(
+                ["gnome-terminal", "--", "bash", "-c",
+                 f"{command}; exec bash"]
+            )
+            return f"Running: {command}"
+        except Exception:
+            return "Something went wrong while running that command."
 
-    def _open_url(self, url):
+    # ── Web / URL / Search / Music ────────────────────────────────
+
+    def _open_url(self, url) -> str:
         if not url:
-            self.tts.speak("Which website should I open?")
-            return
+            return "Which website should I open?"
         if not url.startswith("http"):
             url = "https://" + url
-        self.tts.speak(f"Alright, let's explore {url} 🌐")
         webbrowser.open(url)
         self.context.set_task("browsing")
+        return f"Opening {url}"
 
-    def _play_music(self, song):
+    def _play_music(self, song) -> str:
         if not song:
-            self.tts.speak("Which song should I play?")
             self.context.set_pending("song_name")
-            return
-        self.tts.speak(f"Playing {song} on YouTube. Enjoy the vibes! 🎶")
-        query = song.replace(" ", "+")
-        webbrowser.open(f"https://www.youtube.com/results?search_query={query}")
+            return "Which song should I play?"
+        if self.music:
+            msg = self.music.play(song)
+            self.context.set_task("music")
+            return msg
+        webbrowser.open(
+            f"https://www.youtube.com/results?search_query="
+            f"{song.replace(' ', '+')}"
+        )
         self.context.set_task("music")
+        return f"Playing {song} on YouTube"
 
-    def _search_web(self, query):
+    def _search_web(self, query) -> str:
         if not query:
-            self.tts.speak(self.response.get_response("search_ask"))
             self.context.set_pending("search_query")
-            return
-        self.tts.speak(self.response.get_response("execute_command"))
-        webbrowser.open(f"https://www.google.com/search?q={query.replace(' ', '+')}")
+            return "What should I search for?"
+        webbrowser.open(
+            f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        )
         self.context.set_task("searching")
+        return f"Searching for {query}"
 
-    def _open_folder(self, folder_name):
+    def _open_folder(self, folder_name) -> str:
         if not folder_name:
-            self.tts.speak("Which folder should I open?")
             self.context.set_pending("folder_name")
-            return
+            return "Which folder should I open?"
         folder_path = os.path.expanduser(f"~/{folder_name}")
-        self.tts.speak(f"Opening folder {folder_name} for you. 📁")
-        subprocess.Popen(["nautilus", folder_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            ["nautilus", folder_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
         self.context.set_task(f"folder:{folder_name}")
+        return f"Opening folder {folder_name}"
 
-    def _open_file(self, file_name):
+    def _open_file(self, file_name) -> str:
         if not file_name:
-            self.tts.speak("Which file should I open?")
             self.context.set_pending("file_name")
-            return
-        self.tts.speak(f"Opening {file_name} right away. 📄")
-        subprocess.Popen(["xdg-open", file_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return "Which file should I open?"
+        subprocess.Popen(
+            ["xdg-open", file_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return f"Opening {file_name}"
 
-    def _system_control(self, command):
+    # ── System control ────────────────────────────────────────────
+
+    def _system_control(self, command) -> str:
         cmd = command.lower()
-        if "time" in cmd:
-            t = datetime.datetime.now().strftime("%I:%M %p")
-            self.tts.speak(f"The time is {t} 🕒")
-        elif "date" in cmd:
-            d = datetime.datetime.now().strftime("%A, %B %d, %Y")
-            self.tts.speak(f"Today is {d} 📅")
-        elif "volume up" in cmd:
+
+        if "volume up" in cmd:
+            if self.audio:
+                return self.audio.volume_up()
             os.system("pactl set-sink-volume @DEFAULT_SINK@ +10%")
-            self.tts.speak("Volume increased! 🔊")
-        elif "volume down" in cmd:
+            return "Volume increased"
+
+        if "volume down" in cmd:
+            if self.audio:
+                return self.audio.volume_down()
             os.system("pactl set-sink-volume @DEFAULT_SINK@ -10%")
-            self.tts.speak("Volume decreased! 🔉")
-        elif "mute" in cmd:
+            return "Volume decreased"
+
+        if "mute" in cmd:
+            if self.audio:
+                return self.audio.mute_toggle()
             os.system("pactl set-sink-mute @DEFAULT_SINK@ toggle")
-            self.tts.speak("Toggled mute! 🔇")
-        elif "screenshot" in cmd:
-            os.system("gnome-screenshot")
-            self.tts.speak("Captured that for you! 📸")
-        elif "battery" in cmd:
+            return "Mute toggled"
+
+        if "screenshot" in cmd:
+            return self._take_screenshot()
+
+        if "battery" in cmd:
             b = psutil.sensors_battery()
             if b:
-                self.tts.speak(f"Battery is at {int(b.percent)} percent. {'Plugged in ⚡' if b.power_plugged else 'Running on battery 🔋'}")
-        elif "cpu" in cmd:
+                status = "plugged in" if b.power_plugged else "running on battery"
+                return f"Battery is at {int(b.percent)} percent, {status}"
+            return "Battery information not available"
+
+        if "cpu" in cmd:
             usage = psutil.cpu_percent(interval=1)
-            self.tts.speak(f"CPU usage is at {usage} percent. 💻")
-        elif "shutdown" in cmd:
-            self.tts.speak("Shutting down. See you later! 👋")
+            return f"CPU usage is at {usage} percent"
+
+        if "shutdown" in cmd or "shut down" in cmd:
             os.system("shutdown now")
-        elif "lock" in cmd:
-            self.tts.speak("Locking the screen. Stay safe! 🔒")
-            os.system("gnome-screensaver-command -l")
+            return "Shutting down"
+
+        if "restart" in cmd or "reboot" in cmd:
+            os.system("reboot")
+            return "Restarting"
+
+        if "lock" in cmd:
+            self._lock_screen()
+            return "Locking the screen"
+
+        return "I am not sure how to handle that system command"
+
+    # ── System info ───────────────────────────────────────────────
+
+    def _system_info(self, sub_type: str) -> str:
+        try:
+            if sub_type == "memory":
+                mem = psutil.virtual_memory()
+                free_mb = mem.available // (1024 ** 2)
+                return (f"RAM usage is {mem.percent} percent, "
+                        f"{free_mb} megabytes free")
+
+            if sub_type == "disk":
+                disk = psutil.disk_usage("/")
+                free_gb = disk.free // (1024 ** 3)
+                return (f"Disk usage is {disk.percent} percent, "
+                        f"{free_gb} gigabytes free")
+
+            if sub_type == "temperature":
+                temps = psutil.sensors_temperatures()
+                keys  = [k for k in temps if k in ("coretemp", "k10temp",
+                                                     "cpu_thermal", "acpitz")]
+                if keys:
+                    readings = temps[keys[0]]
+                    avg = sum(r.current for r in readings) / len(readings)
+                    return f"Average CPU temperature is {avg:.1f} degrees Celsius"
+                return "Temperature sensors are not available on this system"
+
+            if sub_type == "network_usage":
+                net = psutil.net_io_counters()
+                sent_mb = net.bytes_sent // (1024 ** 2)
+                recv_mb = net.bytes_recv // (1024 ** 2)
+                return (f"Sent {sent_mb} megabytes, "
+                        f"received {recv_mb} megabytes since last boot")
+
+            if sub_type == "uptime":
+                boot  = datetime.datetime.fromtimestamp(psutil.boot_time())
+                delta = datetime.datetime.now() - boot
+                days  = delta.days
+                hours = delta.seconds // 3600
+                mins  = (delta.seconds % 3600) // 60
+                parts = []
+                if days:  parts.append(f"{days} day{'s' if days != 1 else ''}")
+                if hours: parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+                if mins:  parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
+                return f"System has been running for {', '.join(parts) or 'less than a minute'}"
+
+            if sub_type == "processes":
+                count = len(psutil.pids())
+                return f"There are {count} processes currently running"
+
+        except Exception as e:
+            logger.warning("system_info error for %s: %s", sub_type, e)
+            return "Could not retrieve that system information"
+
+        return "Unknown system info type"
+
+    # ── Screenshot ────────────────────────────────────────────────
+
+    def _take_screenshot(self) -> str:
+        ts   = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.expanduser(f"~/Pictures/screenshot_{ts}.png")
+        os.makedirs(os.path.expanduser("~/Pictures"), exist_ok=True)
+
+        env  = self.env
+        disp = env.display_server if env else "x11"
+        caps = env.capabilities  if env else set()
+
+        if disp == "wayland":
+            if "grim" in caps:
+                subprocess.run(["grim", path], stderr=subprocess.DEVNULL)
+                return "Screenshot saved to Pictures folder"
+            if "gnome-screenshot" in caps:
+                subprocess.run(["gnome-screenshot", "-f", path], stderr=subprocess.DEVNULL)
+                return "Screenshot saved to Pictures folder"
+            return "Screenshot tool not found. Install grim for Wayland."
         else:
-            self.tts.speak("I'm not quite sure how to handle that system command yet.")
+            if "gnome-screenshot" in caps:
+                subprocess.run(["gnome-screenshot", "-f", path], stderr=subprocess.DEVNULL)
+                return "Screenshot saved to Pictures folder"
+            if "scrot" in caps:
+                subprocess.run(["scrot", path], stderr=subprocess.DEVNULL)
+                return "Screenshot saved to Pictures folder"
+            return "No screenshot tool found. Install scrot."
+
+    def _lock_screen(self):
+        env = self.env
+        de  = env.desktop_env if env else "unknown"
+        if "gnome" in de.lower():
+            os.system("gnome-screensaver-command -l 2>/dev/null || loginctl lock-session 2>/dev/null")
+        elif "kde" in de.lower():
+            os.system("loginctl lock-session")
+        else:
+            os.system("xdg-screensaver lock 2>/dev/null || loginctl lock-session 2>/dev/null")
+
+
+# ── Hardcoded app fallback map ────────────────────────────────────────────────
+_HARDCODED_APPS = {
+    "chrome":       "google-chrome",
+    "browser":      "google-chrome",
+    "google":       "google-chrome",
+    "firefox":      "firefox",
+    "terminal":     "gnome-terminal",
+    "vscode":       "code",
+    "vs code":      "code",
+    "files":        "nautilus",
+    "file manager": "nautilus",
+    "calculator":   "gnome-calculator",
+    "settings":     "gnome-control-center",
+    "vlc":          "vlc",
+    "spotify":      "spotify",
+    "discord":      "discord",
+    "zoom":         "zoom",
+    "telegram":     "telegram-desktop",
+    "gedit":        "gedit",
+    "notepad":      "gedit",
+    "libreoffice":  "libreoffice",
+    "writer":       "libreoffice --writer",
+}

@@ -1,0 +1,17 @@
+# Core
+openai
+python-dotenv
+psutil
+
+# Speech
+vosk
+pyaudio
+SpeechRecognition
+
+# TTS (piper binary installed separately — see README)
+
+# Scheduling
+APScheduler
+
+# Audio processing
+numpy

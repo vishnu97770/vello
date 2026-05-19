@@ -1,123 +1,221 @@
 import re
+from vello.nlp.normalizer import Normalizer
+from vello.nlp.fuzzy_matcher import FuzzyMatcher
+
 
 class IntentEngine:
     """
-    Rule-based intent classifier — works fully offline, no API needed.
-    Now with flexible keyword matching and multi-step support.
+    3-tier intent classifier:
+      Tier 1 — Normalizer   (casual → clean phrase)
+      Tier 2 — Rule-based   (fast, offline exact patterns)
+      Tier 3 — Fuzzy        (keyword scoring safety net)
+    Returns a plain string intent name.
+    When context is provided (dict or VelloContext) the method
+    also works — context is used only for active_app fallback.
     """
 
     APP_KEYWORDS = {
         "chrome":      ["chrome", "google chrome", "browser"],
         "google":      ["google", "search engine"],
-        "terminal":     ["terminal", "shell", "console", "command line"],
-        "vscode":       ["vscode", "vs code", "code editor", "visual studio code"],
-        "libreoffice":  ["libreoffice", "office", "writer", "calc"],
-        "files":        ["files", "file manager", "nautilus"],
-        "vlc":          ["vlc", "media player"],
-        "spotify":      ["spotify", "music player"],
+        "terminal":    ["terminal", "shell", "console", "command line"],
+        "vscode":      ["vscode", "vs code", "code editor", "visual studio code"],
+        "calculator":  ["calculator"],
+        "libreoffice": ["libreoffice", "office", "writer", "calc"],
+        "files":       ["files", "file manager", "nautilus"],
+        "vlc":         ["vlc", "media player"],
+        "spotify":     ["spotify", "music player"],
     }
 
-    def classify(self, command, context):
-        cmd = command.lower().strip()
-        active_app = context.get("active_app") or ""
+    def __init__(self):
+        self.normalizer = Normalizer()
+        self.fuzzy      = FuzzyMatcher()
 
-        # ── Goodbye / Exit ───────────────────────────────────────
-        if any(w in cmd for w in ["goodbye", "bye", "exit", "stop", "quit"]):
-            return {"intent": "exit", "app": None, "target": None, "chain": []}
+    # ── Public API ─────────────────────────────────────────────────
+
+    def classify(self, raw_text: str, context=None) -> str:
+        """
+        Classify raw speech into an intent string.
+        context is optional — accepted for backward compatibility
+        but the return is always a plain string intent name.
+        """
+        # Resolve context
+        if hasattr(context, "get_context_summary"):
+            ctx = context.get_context_summary()
+        else:
+            ctx = context or {}
+
+        # --- TIER 1: Normalize casual speech ---
+        normalized = self.normalizer.normalize(raw_text)
+        print(f"[Intent] Raw: '{raw_text}'")
+        print(f"[Intent] Normalized: '{normalized}'")
+
+        # Handle pure greeting
+        if normalized == "__greeting__":
+            print("[Intent] Rule match: greeting")
+            return "greeting"
+
+        # --- TIER 2: Rule-based matching ---
+        intent = self._rule_match(normalized, ctx)
+        if intent:
+            print(f"[Intent] Rule match: {intent}")
+            return intent
+
+        # --- TIER 3: Fuzzy keyword scoring ---
+        intent = self.fuzzy.match(normalized)
+        if intent:
+            print(f"[Intent] Fuzzy match: {intent}")
+            return intent
+
+        # Also try fuzzy on original raw text (catches missed normalizations)
+        intent = self.fuzzy.match(raw_text.lower())
+        if intent:
+            print(f"[Intent] Fuzzy match (raw): {intent}")
+            return intent
+
+        # --- TIER 4: AI fallback ---
+        print("[Intent] No match — AI fallback")
+        return "ai_fallback"
+
+    # ── Rule-based tier ────────────────────────────────────────────
+
+    def _rule_match(self, text: str, ctx: dict = None) -> str:
+        """
+        Fast regex / substring matching on normalized text.
+        Returns an intent string or empty string if no match.
+        """
+        cmd        = text.lower().strip()
+        ctx        = ctx or {}
+        active_app = ctx.get("active_app") or ""
+
+        # ── Music control (before exit so "stop music" ≠ quit) ───
+        if re.search(r"\bstop\s+music\b|\bstop\s+playing\b", cmd):
+            return "music_stop"
+        if re.search(r"\bpause\s+music\b|\bpause\b", cmd):
+            return "music_pause"
+        if re.search(r"\bresume\s+music\b|\bresume\s+playing\b|\bresume\b", cmd):
+            return "music_resume"
+        if re.search(r"\bwhat.s\s+playing\b|\bcurrent\s+song\b|\bnow\s+playing\b", cmd):
+            return "music_status"
+
+        # ── Exit / goodbye ────────────────────────────────────────
+        if any(w in cmd for w in ["goodbye", "bye", "quit"]):
+            return "goodbye"
+        # "exit" / "stop" only if not a system command context
+        if re.search(r"\bexit\b|\bstop\b", cmd) and not re.search(
+            r"\bstop\s+music\b|\bstop\s+playing\b", cmd
+        ):
+            return "goodbye"
+
+        # ── Package management ────────────────────────────────────
+        if re.search(r"\binstall\b", cmd):
+            return "package_install"
+        if re.search(r"\buninstall\b|\bremove\s+package\b", cmd):
+            return "package_remove"
+        if re.search(r"\bupdate\s+system\b|\bupgrade\s+system\b|\bupdate\s+packages\b", cmd):
+            return "system_update"
+
+        # ── Reminders and timers ──────────────────────────────────
+        if re.search(r"\bremind\s+me\b|\bset\s+a?\s*reminder\b", cmd):
+            return "set_reminder"
+        if re.search(r"\bset\s+a?\s*timer\b|\btimer\s+for\b", cmd):
+            return "set_timer"
+        if re.search(r"\blist\s+reminders\b|\bmy\s+reminders\b|\bwhat\s+are\s+my\s+reminders\b", cmd):
+            return "list_reminders"
+
+        # ── Network / Wi-Fi ───────────────────────────────────────
+        if re.search(r"\bwifi\s+on\b|\bturn\s+on\s+wi.?fi\b|\benable\s+wi.?fi\b", cmd):
+            return "wifi_on"
+        if re.search(r"\bwifi\s+off\b|\bturn\s+off\s+wi.?fi\b|\bdisable\s+wi.?fi\b", cmd):
+            return "wifi_off"
+        if re.search(r"\blist\s+networks\b|\bavailable\s+networks\b|\bshow\s+wi.?fi\b|\bscan\s+wifi\b", cmd):
+            return "list_networks"
+        if re.search(r"\bconnect\s+to\b", cmd):
+            return "connect_wifi"
+        if re.search(r"\bmy\s+ip\b|\bip\s+address\b|\bwhat.s\s+my\s+ip\b", cmd):
+            return "get_ip"
+        if re.search(r"\bcheck\s+internet\b|\bam\s+i\s+connected\b|\binternet\s+connection\b", cmd):
+            return "check_internet"
+
+        # ── System info (extended) ────────────────────────────────
+        if re.search(r"\bmemory\b|\bram\b|\bhow\s+much\s+ram\b", cmd):
+            return "memory_usage"
+        if re.search(r"\bdisk\b|\bstorage\b|\bhow\s+much\s+space\b|\bdisk\s+usage\b", cmd):
+            return "disk_usage"
+        if re.search(r"\btemperature\b|\bcpu\s+temp\b|\bhow\s+hot\b", cmd):
+            return "temperature"
+        if re.search(r"\bnetwork\s+usage\b|\bdata\s+usage\b|\bbandwidth\b", cmd):
+            return "network_usage"
+        if re.search(r"\buptime\b|\bhow\s+long\s+running\b|\bsystem\s+uptime\b", cmd):
+            return "uptime"
+        if re.search(r"\bprocesses\b|\bhow\s+many\s+processes\b|\brunning\s+processes\b", cmd):
+            return "processes"
+
+        # ── Clipboard ─────────────────────────────────────────────
+        if re.search(r"\bclipboard\b|\bwhat\s+did\s+i\s+copy\b|\bread\s+clipboard\b|\bpaste\b", cmd):
+            return "clipboard_read"
+        if re.search(r"^copy\s+", cmd):
+            return "clipboard_write"
 
         # ── Multi-step: "open X and do Y" ─────────────────────────
         if " and " in cmd:
-            return self._handle_chain(cmd, context)
+            return self._handle_chain(cmd, ctx)
 
-        # ── Open Apps (Flexible Matching) ──────────────────────────
-        if "open" in cmd or "launch" in cmd or "start" in cmd:
+        # ── Open apps ─────────────────────────────────────────────
+        if re.search(r"\bopen\b|\blaunch\b|\bstart\b", cmd):
             for app, keywords in self.APP_KEYWORDS.items():
                 if any(kw in cmd for kw in keywords):
-                    return {
-                        "intent": "open_app",
-                        "app":    app,
-                        "target": None,
-                        "chain":  []
-                    }
-            
-            # Fallback for unknown apps
-            target = re.sub(r"(open|launch|start)", "", cmd).strip()
-            if target:
-                return {"intent": "open_app", "app": target, "target": None, "chain": []}
+                    return "open_app"
+            return "open_app"
 
-        # ── System controls (Whole Word Matching) ─────────────────
-        system_keywords = [
-            "time", "date", "volume up", "volume down",
-            "mute", "screenshot", "battery", "cpu",
-            "shutdown", "shut down", "restart", "reboot", "lock"
-        ]
-        for kw in system_keywords:
-            # Match whole word only to avoid 'update' matching 'date'
-            if re.search(rf"\b{kw}\b", cmd):
-                return {
-                    "intent": "system_control",
-                    "app":    None,
-                    "target": kw,
-                    "chain":  []
-                }
+        # ── Time / date ───────────────────────────────────────────
+        if re.search(r"\btime\b|\bwhat.s the time\b|\bwhat time\b|\bcurrent time\b", cmd):
+            return "get_time"
+        if re.search(r"\bdate\b|\bwhat.s the date\b|\bwhat day\b|\btoday.s date\b", cmd):
+            return "get_date"
+
+        # ── Volume control ────────────────────────────────────────
+        if re.search(r"\bvolume\s+up\b|\bturn.*volume.*up\b", cmd):
+            return "volume_up"
+        if re.search(r"\bvolume\s+down\b|\bturn.*volume.*down\b", cmd):
+            return "volume_down"
+        if re.search(r"\bmute\b", cmd):
+            return "mute"
+
+        # ── Specific system actions ───────────────────────────────
+        if re.search(r"\bscreenshot\b|\btake.*screen\b", cmd):
+            return "screenshot"
+        if re.search(r"\bbattery\b", cmd):
+            return "battery"
+        if re.search(r"\bcpu\b|\bprocessor\b", cmd):
+            return "cpu_usage"
+        if re.search(r"\bshutdown\b|\bshut\s+down\b|\bpower\s+off\b", cmd):
+            return "shutdown"
+        if re.search(r"\brestart\b|\breboot\b", cmd):
+            return "restart"
+        if re.search(r"\block\b", cmd):
+            return "lock_screen"
 
         # ── Web search ────────────────────────────────────────────
         if any(w in cmd for w in ["search", "google", "look up", "find"]):
-            query = re.sub(r"(search|google|look up|find|for)", "", cmd).strip()
-            return {
-                "intent": "search_web",
-                "app":    active_app,
-                "target": query if query else None,
-                "chain":  []
-            }
+            return "web_search"
 
         # ── Play music ────────────────────────────────────────────
-        if any(w in cmd for w in ["play", "song", "music"]):
-            song = re.sub(r"(play|song|music|on youtube)", "", cmd).strip()
-            return {
-                "intent": "play_music",
-                "app":    active_app,
-                "target": song if song else None,
-                "chain":  []
-            }
+        if any(w in cmd for w in ["play", "song", "music", "put on"]):
+            return "music_play"
 
-        # ── Terminal Command detection (More Specific) ─────────────
-        # Only if "run" or "execute" is used, OR if terminal is active AND it looks like a command
-        is_terminal_command = any(w in cmd for w in ["run ", "execute ", "sudo ", "apt ", "ls ", "cd ", "mkdir "])
-        
-        if is_terminal_command or (active_app == "terminal" and len(cmd.split()) > 1):
-            target = re.sub(r"(run|execute|command)", "", cmd).strip()
-            if target:
-                return {
-                    "intent": "terminal_run",
-                    "app":    "terminal",
-                    "target": target,
-                    "chain":  []
-                }
+        # ── Terminal commands ─────────────────────────────────────
+        if any(w in cmd for w in
+               ["run ", "execute ", "sudo ", "apt ", "ls ", "cd ", "mkdir "]):
+            return "terminal_run"
+        if active_app == "terminal" and len(cmd.split()) > 1:
+            return "terminal_run"
 
-        # ── Fallback → AI ─────────────────────────────────────────
-        return {
-            "intent": "ask_ai",
-            "app":    None,
-            "target": None,
-            "chain":  []
-        }
+        return ""  # No rule match — fall through to fuzzy
 
-    def _handle_chain(self, cmd, context):
-        """
-        Handles: 'open chrome and play believer on youtube'
-        """
+    # ── Chain handler ──────────────────────────────────────────────
+
+    def _handle_chain(self, cmd: str, ctx: dict) -> str:
+        """For chained commands like 'open chrome and search X',
+        return the primary intent (router handles chaining separately)."""
         parts = cmd.split(" and ")
-        first = self.classify(parts[0].strip(), context)
-        chain = []
-
-        for part in parts[1:]:
-            step = self.classify(part.strip(), context)
-            chain.append({
-                "intent": step["intent"],
-                "app":    step.get("app"),
-                "target": step.get("target")
-            })
-
-        first["chain"] = chain
-        return first
+        return self._rule_match(parts[0].strip(), ctx) or "open_app"

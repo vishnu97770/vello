@@ -1,202 +1,269 @@
-# Vello - Context-Aware AI Voice Assistant for Linux
+# Vello — Linux-Native AI Voice Assistant
 
-**Vello** is an offline-capable, context-aware AI voice assistant built specifically for Ubuntu Linux. Designed to act as a personal desktop companion, Vello listens for a wake word, processes spoken commands offline for rapid system tasks, and seamlessly falls back to a cloud-based AI brain (OpenAI GPT-4o-mini) for complex queries. 
-
-With Vello, you can control your desktop, open applications, search the web, and get intelligent conversational answers entirely hands-free.
-
----
-
-## 🚀 Features
-
-- **Wake Word Detection:** Passively listens for the wake word ("Jarvis") with low CPU overhead.
-- **Offline Intent Parsing:** Fast, offline rule-based engine to handle common tasks without API latency.
-- **Context Awareness:** Remembers active applications to provide contextual follow-ups (e.g., "open folder" will open in VS Code if it is your active application).
-- **Multi-step Commands:** Understands and executes chained actions sequentially like *"open chrome and play believer on youtube"*.
-- **System Automation:** Control volume, take screenshots, check battery/CPU, shutdown, and lock the screen using voice commands.
-- **Cloud AI Fallback:** Integrates with OpenAI's `gpt-4o-mini` to answer general knowledge questions conversationally when local commands don't match.
-- **Fast Local TTS:** Uses Piper TTS with local ONNX models for smooth, ultra-fast, and natural-sounding voice responses.
+**Vello** is an open-source, offline-capable, context-aware AI voice assistant
+built specifically for desktop Linux (Ubuntu, Fedora, Arch, Mint, Pop!_OS).
+It is the Linux equivalent of Apple Siri or Windows Cortana — a feature that
+has never existed natively on Linux — built entirely in Python 3.
 
 ---
 
-## 🛠️ Tech Stack & Architecture
+## Features
 
-- **Programming Language:** Python 3
-- **Wake Word Engine:** [Picovoice Porcupine](https://picovoice.ai/) (`pvporcupine`)
-- **Speech-to-Text (STT):** `SpeechRecognition` library (utilizing Google Speech Recognition)
-- **Text-to-Speech (TTS):** [Piper TTS](https://github.com/rhasspy/piper) with local `.onnx` models
-- **Audio Processing:** `PyAudio`
-- **Cloud AI:** OpenAI API (`gpt-4o-mini`)
-- **System Control & Metrics:** `psutil`, `subprocess`, `os`, `webbrowser`
-
----
-
-## 📚 Libraries and Models Detailed Overview
-
-### Core Libraries
-- **`pvporcupine`**: The official Python binding for Picovoice's Porcupine engine. It processes audio frames locally, ensuring privacy and highly accurate, low-latency wake word detection.
-- **`SpeechRecognition`**: A robust wrapper for various speech APIs. In this project, it interfaces with the free Google Web Speech API to convert recorded audio from your microphone into text.
-- **`pyaudio`**: Provides Python bindings for PortAudio, the cross-platform audio I/O library. It captures live audio streams from the system microphone and feeds it into the wake word detector and STT engine.
-- **`openai`**: The official Python client for OpenAI's API. It allows Vello to seamlessly fall back to a powerful cloud-based LLM when local intents are not matched, making conversations fluid and intelligent.
-- **`psutil`**: A cross-platform library for retrieving information on running processes and system utilization. Vello uses it to report real-time hardware metrics like battery levels and CPU load.
-- **`python-dotenv`**: A utility that reads key-value pairs from a `.env` file and sets them as environment variables, keeping sensitive information like your API keys secure.
-
-### AI & Machine Learning Models
-- **Porcupine Wake Word Model**: A highly optimized, lightweight neural network trained specifically to detect the "Jarvis" keyword from a continuous audio stream without needing an internet connection.
-- **Piper TTS ONNX Models**: Piper is a fast, local neural text-to-speech engine. Vello uses `.onnx` models (such as `en_US-lessac-medium.onnx`), which are acoustic models trained on human voices to synthesize incredibly realistic and fast speech offline.
-- **GPT-4o-mini (OpenAI)**: OpenAI’s highly efficient and fast Large Language Model. It acts as the "Brain" of Vello, providing dynamic conversational capabilities, answering complex factual questions, and understanding context far beyond rigid offline rules.
+- **Offline Wake Word** — Say "Hey Vello" or "Hey Jarvis" to activate. No cloud needed.
+- **Offline STT** — Vosk speech-to-text runs fully on-device (no Google, no API).
+- **Offline TTS** — Piper TTS with local ONNX voice model for natural speech.
+- **AI Fallback** — OpenAI GPT-4o-mini answers anything not handled locally.
+- **Multi-turn Memory** — Remembers the last 3 exchanges for follow-up questions.
+- **Dynamic App Registry** — Reads your installed `.desktop` files, opens any app.
+- **PipeWire + PulseAudio** — Volume control auto-detects your audio backend.
+- **X11 + Wayland Screenshots** — Picks the right tool (grim, scrot, gnome-screenshot).
+- **Real Music Playback** — Plays audio via `mpv + yt-dlp` (no browser needed).
+- **Reminders & Timers** — "Remind me in 10 minutes to drink water."
+- **Wi-Fi Control** — Turn on/off, scan, connect to networks via `nmcli`.
+- **Clipboard** — Read and write clipboard on X11 (xclip) and Wayland (wl-clipboard).
+- **System Info** — RAM, disk, CPU temp, uptime, network usage, processes.
+- **Package Management** — Install, remove, and update packages with confirmation.
+- **Multi-step Commands** — "Open Chrome and search Python tutorials."
+- **Safety Checks** — Dangerous commands (rm -rf, mkfs, etc.) are always blocked.
 
 ---
 
-## 📁 Project Structure
+## Architecture
 
-```text
-vello-1/
-├── main.py                 # Application entry point & main listening loop
-├── .env                    # Environment variables (API keys)
-├── requirements.txt        # Python dependencies list
-├── audio/
-│   ├── listener.py         # Audio input stream configurations
-│   └── wake_word.py        # Picovoice Porcupine wake word detector logic
-├── voice/
-│   ├── speech_to_text.py   # Microphone listener & Google STT integration
-│   └── text_to_speech.py   # Piper TTS local audio generation & playback
-├── core/
-│   ├── ai_brain.py         # OpenAI GPT-4o-mini API integration and system prompting
-│   ├── command_router.py   # Routes intents to system execution commands
-│   ├── context_manager.py  # Tracks active apps and conversation context/pending actions
-│   └── intent_engine.py    # Offline rule-based intent parser & multi-command chain handler
-├── automation/
-│   └── system_commands.py  # Linux specific system and app control scripts
-└── data/
-    └── models/             # Local Piper TTS ONNX models (e.g., en_US-lessac)
+```
+main.py
+├── VelloEnvironment      → Detects audio/display/DE/package manager at startup
+├── VoskSTT               → Offline wake word + speech recognition (Vosk)
+├── TextToSpeech          → Piper TTS with local ONNX model
+├── VelloContext           → Session state + GPT conversation history
+├── IntentEngine          → Rule-based offline intent classifier
+├── CommandRouter         → Executes all actions
+│   ├── AudioController   → PipeWire / PulseAudio volume control
+│   ├── MusicPlayer       → mpv + yt-dlp real audio playback
+│   ├── ReminderSystem    → APScheduler timers and reminders
+│   ├── NetworkController → nmcli Wi-Fi management
+│   ├── ClipboardController → xclip / wl-clipboard integration
+│   └── PackageManager    → apt / dnf / pacman / zypper
+└── AIBrain               → OpenAI GPT-4o-mini multi-turn fallback
 ```
 
 ---
 
-## ⚙️ Core Logic & Flow
+## Installation
 
-1. **Passive Listening:** The `WakeWordDetector` continuously monitors the microphone buffer for the keyword ("Jarvis") using the Porcupine engine.
-2. **Command Capture:** Once triggered, Vello chimes in and `SpeechToText` captures the user's spoken instruction.
-3. **Context Resolution:** The `ContextManager` checks for any pending actions or active context (e.g., clarifying which file to open if previously unspecified).
-4. **Intent Classification:** The `IntentEngine` parses the text locally. It looks for actionable patterns (open apps, play music, chained commands using "and").
-5. **Execution:** The `CommandRouter` triggers local Linux terminal commands (via `automation/system_commands.py`) to launch applications, manipulate files, or adjust system settings.
-6. **AI Fallback:** If the command is purely conversational or lacks a local system trigger, the `AIBrain` sends the query to OpenAI. The generated response is spoken back via Piper TTS.
+### 1. System Dependencies
 
----
-
-## 💻 Installation & Setup
-
-### 1. Prerequisites
-Ensure you are running **Ubuntu Linux** (or a similar Debian-based distro) with Python 3 installed. You will also need essential system audio and utility packages:
+**Ubuntu / Debian:**
 ```bash
 sudo apt update
-sudo apt install python3-pyaudio portaudio19-dev alsa-utils gnome-screenshot xdg-utils
+sudo apt install python3-pyaudio portaudio19-dev alsa-utils \
+    gnome-screenshot scrot grim xclip wl-clipboard \
+    nmcli mpv yt-dlp notify-send xdotool wmctrl
 ```
-*Note: You also need the [Piper TTS binary](https://github.com/rhasspy/piper) installed and accessible in your system's PATH.*
 
-### 2. Clone the Repository
+**Fedora:**
+```bash
+sudo dnf install python3-pyaudio portaudio-devel alsa-utils \
+    gnome-screenshot scrot grim xclip wl-clipboard \
+    NetworkManager-tui mpv yt-dlp libnotify xdotool wmctrl
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S python-pyaudio portaudio alsa-utils \
+    gnome-screenshot scrot grim xclip wl-clipboard \
+    networkmanager mpv yt-dlp libnotify xdotool wmctrl
+```
+
+### 2. Piper TTS Binary
+
+Download the Piper binary and place it in your PATH:
+```bash
+# Download from https://github.com/rhasspy/piper/releases
+wget https://github.com/rhasspy/piper/releases/download/v1.2.0/piper_linux_x86_64.tar.gz
+tar xzf piper_linux_x86_64.tar.gz
+sudo cp piper/piper /usr/local/bin/
+```
+
+### 3. Piper TTS Voice Model
+
+```bash
+mkdir -p data/models
+cd data/models
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx
+wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json
+```
+
+### 4. Vosk Offline STT Model
+
+```bash
+mkdir -p ~/.vello/models
+cd ~/.vello/models
+wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip
+mv vosk-model-small-en-us-0.15 vosk-model-small-en-us
+```
+
+### 5. Clone and Setup
+
 ```bash
 git clone <repository-url>
 cd vello-1
-```
-
-### 3. Setup Virtual Environment
-```bash
 python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 4. Install Python Dependencies
-Install the required packages. Ensure your `requirements.txt` includes the following core libraries:
+### 6. Environment Variables
+
 ```bash
-pip install pvporcupine SpeechRecognition pyaudio openai psutil python-dotenv
+cp .env.example .env
+# Edit .env and add your OpenAI API key
 ```
 
-### 5. Environment Variables
-Create a `.env` file in the root directory and securely add your API keys:
-```env
-PICOVOICE_ACCESS_KEY=your_picovoice_access_key_here
+`.env` file:
+```
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-### 6. Download TTS Model
-Download a Piper TTS ONNX model (e.g., `en_US-lessac-medium.onnx` and its corresponding `.json` config file) and place it in the `data/models/` directory as expected by `text_to_speech.py`.
-
 ---
 
-## ▶️ How to Run
+## Running
 
-Start Vello by executing the main script from your terminal:
 ```bash
+source venv/bin/activate
 python main.py
-
-```
-*Wait for the console to output `Waiting for wake word...` and simply say **"Jarvis"** to activate your new assistant!*
-
----
-
-## 🎙️ Example Demo Output
-
-Here is a real-world example of how Vello listens, parses context, and executes commands sequentially:
-
-```text
-VELLO: Vello is ready
-
-Waiting for wake word...
-Listening for wake word...
-Wake word detected!
-VELLO: Yes?
-🎤 Speak...
-You said: open terminal
-
-Command : open terminal
-Context : {'active_app': None, 'active_task': None, 'pending': None, 'recent': []}
-Intent  : {'intent': 'open_app', 'app': 'terminal', 'target': None, 'chain': []}
-VELLO: Opening terminal
-VELLO: Terminal is open. What would you like to run?
-
-🎤 Speak...
-You said: pseudo update
-
-Command : pseudo update
-Context : {'active_app': 'terminal', 'active_task': None, 'pending': None, 'recent': ['opened:terminal']}
-Intent  : {'intent': 'system_control', 'app': None, 'target': 'date', 'chain': []}
-VELLO: Today is Tuesday, May 05, 2026
-
-🎤 Speak...
-You said: open Chrome
-
-Command : open Chrome
-Context : {'active_app': 'terminal', 'active_task': None, 'pending': None, 'recent': ['opened:terminal']}
-Intent  : {'intent': 'open_app', 'app': 'chrome', 'target': None, 'chain': []}
-VELLO: Opening chrome
-VELLO: Chrome is open. You can say: search something, open YouTube, or open any website.
-
-🎤 Speak...
-You said: in YouTube play a song
-
-Command : in YouTube play a song
-Context : {'active_app': 'chrome', 'active_task': 'searching', 'pending': None, 'recent': ['opened:terminal', 'opened:chrome', 'task:browsing', 'task:searching']}
-Intent  : {'intent': 'play_music', 'app': 'chrome', 'target': 'in youtube a song', 'chain': []}
-VELLO: Playing in youtube a song on YouTube
 ```
 
+At startup you will see a capability report:
+
+```
+┌─────────────────────────────────────────┐
+│  VELLO — Starting up                    │
+│  Audio:    Pipewire                     │
+│  Display:  Wayland                      │
+│  Desktop:  Gnome                        │
+│  Packages: apt                          │
+│  STT:      Vosk (offline)               │
+│  TTS:      Piper                        │
+├─────────────────────────────────────────┤
+│  ✓  Volume control                      │
+│  ✓  Screenshots                         │
+│  ✓  Music playback (mpv + yt-dlp)       │
+│  ✓  Wi-Fi control (nmcli)               │
+│  ✓  Reminders (APScheduler)             │
+│  ✓  Clipboard (xclip / wl-clipboard)    │
+│  ✓  Desktop notifications (notify-send) │
+└─────────────────────────────────────────┘
+```
+
+Then say **"Hey Vello"** to begin.
+
 ---
 
-## 🔮 Future Improvements
-- **Custom Wake Words:** Implement custom trained wake words dynamically.
-- **Fully Offline STT:** Replace Google Speech Recognition with an offline engine like `Whisper.cpp` or `Vosk` for complete privacy and zero-latency command parsing.
-- **Advanced Context:** Extend context awareness to dynamically read active window titles using Linux window managers (like `xdotool` or `wmctrl`).
-- **GUI Dashboard:** Create a lightweight system tray app or dashboard to monitor Vello's status, API usage, and recognized commands.
+## Voice Commands
+
+### Wake Words
+`Hey Vello` · `Hey Jarvis` · `Jarvis` · `Vello` · `Ok Vello` · `Hey Buddy`
+
+### Open Applications
+> "Open Chrome" · "Open VS Code" · "Open Terminal" · "Launch Spotify"
+> "Start Discord" · "Open Firefox" · "Open Calculator"
+
+Any installed application (reads your `.desktop` files automatically).
+
+### System Controls
+> "What is the time" · "What is the date"
+> "Volume up" · "Volume down" · "Mute"
+> "Take a screenshot" · "Lock screen"
+> "Battery level" · "CPU usage" · "Shutdown"
+
+### Extended System Info
+> "Memory usage" · "Disk usage" · "CPU temperature"
+> "Network usage" · "System uptime" · "How many processes"
+
+### Music Playback
+> "Play Believer" · "Play Shape of You on YouTube"
+> "Pause music" · "Resume music" · "Stop music" · "What's playing"
+
+### Web & Search
+> "Search Python tutorials" · "Google machine learning"
+> "Look up best Linux apps" · "Find how to use grep"
+
+### Reminders & Timers
+> "Remind me in 10 minutes to drink water"
+> "Set a timer for 5 minutes"
+> "List my reminders"
+
+### Wi-Fi & Network
+> "WiFi on" · "WiFi off"
+> "Show available networks" · "Connect to HomeWifi"
+> "What's my IP" · "Check internet connection"
+
+### Clipboard
+> "Read clipboard" · "What did I copy"
+> "Copy hello world"
+
+### Package Management
+> "Install vlc" · "Uninstall gimp" · "Update system"
+*(Always asks for confirmation before executing)*
+
+### Terminal Commands
+> "Run ls -la" · "Execute pwd" · "sudo apt update"
+
+### Multi-step Chained Commands
+> "Open Chrome and search Python tutorials"
+> "Open Chrome and play Believer on YouTube"
+
+### AI Fallback (any question)
+> "What is machine learning?"
+> "How do I reverse a list in Python?"
+> "Write a poem about Linux"
+
+### Exit
+> "Goodbye" · "Bye" · "Exit" · "Quit"
 
 ---
 
-## 📝 Project Summary
+## Project Structure
 
-Vello represents a powerful bridge between simple local automation scripts and advanced cloud artificial intelligence. By processing the wake word, intent classification, system commands, and text-to-speech synthesis entirely offline, it guarantees lightning-fast response times and deep, secure integration with the Linux desktop ecosystem. However, by gracefully falling back to OpenAI's GPT-4o-mini when local rules fall short, it avoids the typical limitations of rigid scripts. The result is a rich, conversational, and genuinely helpful desktop assistant experience that empowers power users to control their system completely hands-free.
+```
+vello-1/
+├── main.py                        # Entry point
+├── .env                           # API keys
+├── requirements.txt               # Python dependencies
+├── vello/                         # Core Vello package
+│   ├── environment.py             # OS/hardware detection singleton
+│   ├── context.py                 # Session state + GPT conversation memory
+│   ├── app_registry.py            # Dynamic .desktop file registry
+│   ├── audio_control.py           # PipeWire / PulseAudio volume control
+│   ├── music_player.py            # mpv + yt-dlp music playback
+│   ├── reminders.py               # APScheduler reminders and timers
+│   ├── network_control.py         # nmcli Wi-Fi management
+│   ├── clipboard.py               # X11/Wayland clipboard
+│   ├── package_manager.py         # apt/dnf/pacman/zypper wrapper
+│   └── stt/
+│       └── vosk_stt.py            # Offline Vosk speech-to-text
+├── voice/
+│   └── text_to_speech.py          # Piper TTS
+├── core/
+│   ├── intent_engine.py           # Rule-based intent classifier
+│   ├── command_router.py          # Intent → action executor
+│   ├── ai_brain.py                # OpenAI GPT-4o-mini multi-turn
+│   └── response_generator.py      # Random fun response phrases
+├── audio/
+│   └── wake_word.py               # Wake word detector (Google STT fallback)
+└── data/models/                   # Piper TTS ONNX models
+```
 
 ---
 
-## 🧑‍💻 Author / Credits
-Developed as an advanced, context-aware AI desktop assistant for Linux power users.
-Built utilizing [Picovoice Porcupine](https://picovoice.ai/) for wake word detection, [Piper TTS](https://github.com/rhasspy/piper) for synthesis, and [OpenAI](https://openai.com/) for intelligent conversational fallback.
+## Why Linux Only?
+
+Mac has Siri. Windows has Cortana. Linux has nothing.
+
+Vello fills that gap. It uses only Linux-native tools (`pactl`/`wpctl`, `nautilus`,
+`nmcli`, `gnome-screenshot`, `grim`, `xclip`, `wl-clipboard`, `xdg-open`) and
+is designed to work across all major desktop environments (GNOME, KDE, XFCE,
+Cinnamon) and both display servers (X11 and Wayland). It will not run correctly
+on macOS or Windows by design.
