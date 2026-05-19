@@ -54,24 +54,34 @@ class CommandRouter:
         "music_play", "web_search", "volume_up", "volume_down",
         "mute", "screenshot", "shutdown", "restart", "lock_screen",
         "goodbye", "greeting",
+        "media_next", "media_previous", "media_now_playing", "media_playpause",
+        "window_close", "window_minimize", "window_maximize",
+        "window_snap_left", "window_snap_right", "window_list",
+        "brightness_up", "brightness_down", "brightness_set", "brightness_get",
+        "file_search", "file_open", "folder_open", "recent_files",
     }
 
     def __init__(self, tts=None, context=None, env=None, audio_ctrl=None,
                  music=None, reminders=None, network=None,
                  clipboard=None, packages=None, app_registry=None,
-                 stt=None):
-        self.tts          = tts or _DummyTTS()
-        self.context      = context or _DummyContext()
-        self.response     = ResponseGenerator()
-        self.env          = env
-        self.audio        = audio_ctrl
-        self.music        = music
-        self.reminders    = reminders
-        self.network      = network
-        self.clipboard    = clipboard
-        self.packages     = packages
-        self.app_registry = app_registry
-        self.stt          = stt
+                 stt=None, dbus_media=None, window_manager=None,
+                 file_ops=None, brightness=None):
+        self.tts            = tts or _DummyTTS()
+        self.context        = context or _DummyContext()
+        self.response       = ResponseGenerator()
+        self.env            = env
+        self.audio          = audio_ctrl
+        self.music          = music
+        self.reminders      = reminders
+        self.network        = network
+        self.clipboard      = clipboard
+        self.packages       = packages
+        self.app_registry   = app_registry
+        self.stt            = stt
+        self.dbus_media     = dbus_media
+        self.window_manager = window_manager
+        self.file_ops       = file_ops
+        self.brightness     = brightness
 
     # ── Primary public API ─────────────────────────────────────────
 
@@ -143,6 +153,77 @@ class CommandRouter:
         # ── AI fallback ───────────────────────────────────────────
         if intent in ("ai_fallback", "ask_ai"):
             return "USE_AI"
+
+        # ── MPRIS2 media control ──────────────────────────────────
+        if intent == "media_next":
+            return self.dbus_media.next_track() if self.dbus_media \
+                else "Media control not available"
+        if intent == "media_previous":
+            return self.dbus_media.previous_track() if self.dbus_media \
+                else "Media control not available"
+        if intent == "media_now_playing":
+            return self.dbus_media.get_now_playing() if self.dbus_media \
+                else "Media control not available"
+        if intent == "media_playpause":
+            return self.dbus_media.play_pause() if self.dbus_media \
+                else "Media control not available"
+
+        # ── Window management ─────────────────────────────────────
+        if intent == "window_close":
+            return self.window_manager.close_window() if self.window_manager \
+                else "Window manager not available"
+        if intent == "window_minimize":
+            return self.window_manager.minimize_window() if self.window_manager \
+                else "Window manager not available"
+        if intent == "window_maximize":
+            return self.window_manager.maximize_window() if self.window_manager \
+                else "Window manager not available"
+        if intent == "window_snap_left":
+            return self.window_manager.snap_left() if self.window_manager \
+                else "Window manager not available"
+        if intent == "window_snap_right":
+            return self.window_manager.snap_right() if self.window_manager \
+                else "Window manager not available"
+        if intent == "window_list":
+            return self.window_manager.list_windows() if self.window_manager \
+                else "Window manager not available"
+
+        # ── Brightness ────────────────────────────────────────────
+        if intent == "brightness_up":
+            return self.brightness.brightness_up() if self.brightness \
+                else "Brightness control not available"
+        if intent == "brightness_down":
+            return self.brightness.brightness_down() if self.brightness \
+                else "Brightness control not available"
+        if intent == "brightness_set":
+            level = self._extract_brightness_level(command)
+            if level is None:
+                return "What brightness level? Say a number like 70."
+            return self.brightness.set_brightness(level) if self.brightness \
+                else "Brightness control not available"
+        if intent == "brightness_get":
+            if not self.brightness:
+                return "Brightness control not available"
+            val = self.brightness.get_brightness()
+            return f"Brightness is at {val} percent" if val >= 0 \
+                else "Could not read brightness level"
+
+        # ── File operations ───────────────────────────────────────
+        if intent == "file_search":
+            query = self._extract_file_query(command)
+            return self.file_ops.search_files(query) if self.file_ops \
+                else "File search not available"
+        if intent == "file_open":
+            fname = self._extract_file_name(command)
+            return self.file_ops.open_file(fname) if self.file_ops \
+                else "File open not available"
+        if intent == "folder_open":
+            folder = self._extract_folder_name(command)
+            return self.file_ops.open_folder(folder) if self.file_ops \
+                else "Folder open not available"
+        if intent == "recent_files":
+            return self.file_ops.recent_files() if self.file_ops \
+                else "File ops not available"
 
         # ── Time / date ───────────────────────────────────────────
         if intent == "get_time":
@@ -405,6 +486,42 @@ class CommandRouter:
         m = re.search(r'\bremind\s+me\s+(?:to\s+)?(.+)', cmd)
         if m:
             return m.group(1).strip()
+        return cmd
+
+    def _extract_brightness_level(self, command: str):
+        """Extract integer brightness level from command, or None."""
+        m = re.search(r'\b(\d{1,3})\b', command)
+        if m:
+            return int(m.group(1))
+        return None
+
+    def _extract_file_query(self, command: str) -> str:
+        """Extract file search term from command."""
+        cmd = command.lower().strip()
+        for prefix in ("find file ", "search for file ", "where is ",
+                       "search file ", "find my "):
+            if prefix in cmd:
+                return cmd.split(prefix, 1)[1].strip()
+        return cmd
+
+    def _extract_file_name(self, command: str) -> str:
+        """Extract filename from command."""
+        cmd = command.lower().strip()
+        for prefix in ("open file ", "open the file "):
+            if cmd.startswith(prefix):
+                return cmd[len(prefix):].strip()
+        m = re.search(r'\bopen\s+(?:the\s+)?file\s+(.+)', cmd)
+        if m:
+            return m.group(1).strip()
+        return cmd
+
+    def _extract_folder_name(self, command: str) -> str:
+        """Extract folder name from command."""
+        cmd = command.lower().strip()
+        for prefix in ("open folder ", "open the folder ",
+                       "open my ", "go to ", "open "):
+            if cmd.startswith(prefix):
+                return cmd[len(prefix):].strip()
         return cmd
 
     # ── App opening ───────────────────────────────────────────────

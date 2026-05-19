@@ -87,6 +87,18 @@ class IntentEngine:
         ctx        = ctx or {}
         active_app = ctx.get("active_app") or ""
 
+        # ── MPRIS2 media control ──────────────────────────────────
+        if re.search(r"\bnext\s+(?:track|song)\b|\bskip\b|\bskip\s+song\b", cmd):
+            return "media_next"
+        if re.search(r"\bprevious\s+(?:track|song)\b|\bgo\s+back\b"
+                     r"|\blast\s+song\b|\bprev\b", cmd):
+            return "media_previous"
+        if re.search(r"\bwhat.s\s+playing\b|\bcurrent\s+song\b"
+                     r"|\bnow\s+playing\b|\bwhat\s+is\s+playing\b", cmd):
+            return "media_now_playing"
+        if re.search(r"\btoggle\s+music\b|\bplay\s*pause\b|\bplaypause\b", cmd):
+            return "media_playpause"
+
         # ── Music control (before exit so "stop music" ≠ quit) ───
         if re.search(r"\bstop\s+music\b|\bstop\s+playing\b", cmd):
             return "music_stop"
@@ -94,8 +106,6 @@ class IntentEngine:
             return "music_pause"
         if re.search(r"\bresume\s+music\b|\bresume\s+playing\b|\bresume\b", cmd):
             return "music_resume"
-        if re.search(r"\bwhat.s\s+playing\b|\bcurrent\s+song\b|\bnow\s+playing\b", cmd):
-            return "music_status"
 
         # ── Exit / goodbye ────────────────────────────────────────
         if any(w in cmd for w in ["goodbye", "bye", "quit"]):
@@ -105,6 +115,20 @@ class IntentEngine:
             r"\bstop\s+music\b|\bstop\s+playing\b", cmd
         ):
             return "goodbye"
+
+        # ── Window management ─────────────────────────────────────
+        if re.search(r"\bclose\s+(?:this\s+)?window\b|\bclose\s+this\b", cmd):
+            return "window_close"
+        if re.search(r"\bminimi[sz]e\b", cmd):
+            return "window_minimize"
+        if re.search(r"\bmaxi[ms]i[sz]e\b|\bmaximize\b|\bmaximise\b", cmd):
+            return "window_maximize"
+        if re.search(r"\bsnap\s+left\b|\bmove\s+window\s+left\b|\bwindow\s+left\b", cmd):
+            return "window_snap_left"
+        if re.search(r"\bsnap\s+right\b|\bmove\s+window\s+right\b|\bwindow\s+right\b", cmd):
+            return "window_snap_right"
+        if re.search(r"\blist\s+windows?\b|\bwhat\s+windows?\b|\bshow\s+windows?\b", cmd):
+            return "window_list"
 
         # ── Package management ────────────────────────────────────
         if re.search(r"\binstall\b", cmd):
@@ -156,9 +180,27 @@ class IntentEngine:
         if re.search(r"^copy\s+", cmd):
             return "clipboard_write"
 
+        # ── File ops (before open_app / web_search to avoid collision) ──
+        if re.search(r"\brecent\s+files?\b|\bwhat\s+did\s+i\s+work\s+on\b", cmd):
+            return "recent_files"
+        if re.search(r"\bfind\s+(?:a\s+)?file\b|\bsearch\s+(?:for\s+)?(?:a\s+)?file\b"
+                     r"|\bwhere\s+is\b", cmd):
+            return "file_search"
+
         # ── Multi-step: "open X and do Y" ─────────────────────────
         if " and " in cmd:
             return self._handle_chain(cmd, ctx)
+
+        # ── Folder / file open (before generic open_app) ──────────
+        if re.search(
+            r"\bopen\s+(?:my\s+)?(?:downloads?|documents?|desktop"
+            r"|pictures?|music|videos?|home)\b"
+            r"|\bopen\s+(?:the\s+)?(?:downloads?|documents?|desktop)\s+folder\b"
+            r"|\bgo\s+to\b|\bopen\s+folder\b", cmd
+        ):
+            return "folder_open"
+        if re.search(r"\bopen\s+(?:the\s+)?file\b|\bopen\s+\S+\.\S+\b", cmd):
+            return "file_open"
 
         # ── Open apps ─────────────────────────────────────────────
         if re.search(r"\bopen\b|\blaunch\b|\bstart\b", cmd):
@@ -180,6 +222,18 @@ class IntentEngine:
             return "volume_down"
         if re.search(r"\bmute\b", cmd):
             return "mute"
+
+        # ── Brightness control ────────────────────────────────────
+        if re.search(r"\bbrightness\s+up\b|\bbrighter\b|\bincrease\s+brightness\b", cmd):
+            return "brightness_up"
+        if re.search(r"\bbrightness\s+down\b|\bdimmer\b|\bdecrease\s+brightness\b|\bdim\b", cmd):
+            return "brightness_down"
+        if re.search(r"\bset\s+brightness\s+to\b|\bbright(?:ness)?\s+to\b"
+                     r"|\bbright(?:ness)?\s+\d+\b", cmd):
+            return "brightness_set"
+        if re.search(r"\bwhat.s\s+my\s+brightness\b|\bbright(?:ness)?\s+level\b"
+                     r"|\bcheck\s+brightness\b", cmd):
+            return "brightness_get"
 
         # ── Specific system actions ───────────────────────────────
         if re.search(r"\bscreenshot\b|\btake.*screen\b", cmd):

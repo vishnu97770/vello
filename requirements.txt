@@ -1,17 +1,32 @@
-# Core
-openai
-python-dotenv
-psutil
+# Speech recognition (offline)
+vosk>=0.3.45
+pyaudio>=0.2.13
 
-# Speech
-vosk
-pyaudio
-SpeechRecognition
+# Wake word detection
+openwakeword>=0.6.0
+numpy>=1.24.0
 
-# TTS (piper binary installed separately — see README)
+# AI fallback (OpenAI GPT)
+openai>=1.0.0
 
-# Scheduling
-APScheduler
+# Environment variables
+python-dotenv>=1.0.0
 
-# Audio processing
-numpy
+# Scheduling (reminders / timers)
+APScheduler>=3.10.0
+
+# System monitoring
+psutil>=5.9.0
+
+# HTTP (model downloads)
+requests>=2.31.0
+
+# Online STT fallback
+SpeechRecognition>=3.10.0
+
+# Fallback TTS when espeak/piper unavailable
+# pyttsx3>=2.90
+
+# D-Bus media control — install via system package instead:
+# sudo apt install python3-dbus   (Ubuntu/Debian)
+# sudo dnf install python3-dbus   (Fedora)
