@@ -28,6 +28,14 @@ from vello.file_ops         import FileOps
 from vello.brightness       import BrightnessController
 from vello.tts.speaker      import Speaker
 from vello.stt.wake_word    import WakeWordDetector
+
+# ── New intelligence modules ──────────────────────────────────────────────────
+from vello.memory           import MemoryManager
+from vello.profile          import UserProfile
+from vello.goals            import GoalEngine
+from vello.agents           import ExecutiveAgent, ResearchAgent, CodingAgent
+from vello.proactive        import ProactiveEngine
+
 from core.intent_engine     import IntentEngine
 from core.command_router    import CommandRouter
 from core.ai_brain          import AIBrain
@@ -80,6 +88,19 @@ def main():
     print("Building app registry from .desktop files...")
     app_registry = build_app_registry()
 
+    # ── Intelligence layer ────────────────────────────────────────
+    print("Initializing memory and profile systems...")
+    memory  = MemoryManager()
+    profile = UserProfile()
+
+    goal_engine     = GoalEngine(profile=profile, memory=memory)
+    executive       = ExecutiveAgent(memory=memory, profile=profile)
+    research_agent  = ResearchAgent(memory=memory, profile=profile)
+    coding_agent    = CodingAgent(memory=memory, profile=profile)
+
+    proactive = ProactiveEngine(profile=profile, memory=memory)
+    proactive.start()
+
     # ── Initialize Speaker (TTS) ──────────────────────────────────
     speaker = Speaker()
 
@@ -125,15 +146,30 @@ def main():
         window_manager = window_manager,
         file_ops       = file_ops,
         brightness     = brightness,
+        # Intelligence
+        memory         = memory,
+        profile        = profile,
+        goal_engine    = goal_engine,
+        research_agent = research_agent,
+        coding_agent   = coding_agent,
     )
-    ai = AIBrain()
+    ai = AIBrain(memory=memory, profile=profile)
 
     # ── Startup banner ────────────────────────────────────────────
     env.print_startup_banner()
-    speaker.speak("Vello is ready. Say Hey Vello to begin.")
+    greeting = "Vello is ready."
+    if profile.name:
+        greeting = f"Welcome back, {profile.name}. Vello is ready."
+    speaker.speak(greeting + " Say Hey Vello to begin.")
 
     # ── Main loop ─────────────────────────────────────────────────
     while True:
+        # --- Proactive suggestion check (between wake-word listens) ---
+        suggestion = proactive.pop_suggestion()
+        if suggestion:
+            print(f"[Vello] Proactive: {suggestion}")
+            speaker.speak(suggestion)
+
         # --- Step 1: Wait for wake word ---
         print("[Vello] Listening for wake word...")
 
@@ -180,18 +216,45 @@ def main():
                     context.reset()
                     break
 
-                # --- Execute command ---
+                # --- Route through Executive Agent for AI fallback ---
+                # Let command router handle known intents first
                 print("[Vello] Routing command...")
                 result = router.execute(intent, command)
                 print(f"[Vello] Result: {result}")
 
                 # --- AI fallback ---
                 if result == "USE_AI":
-                    print("[Vello] Falling back to AI brain...")
-                    messages = context.build_gpt_messages(command)
-                    result   = ai.ask_with_context(messages)
-                    print(f"[Vello] AI result: {result}")
+                    # Executive Agent picks the right specialist
+                    agent_type = executive.route(command)
+                    print(f"[Vello] Executive routed to: {agent_type}")
+
+                    if agent_type == "research":
+                        result = research_agent.research(command)
+                    elif agent_type == "coding":
+                        result = coding_agent.assist(command)
+                    elif agent_type == "goals":
+                        result = goal_engine.set_goal(command)
+                    elif agent_type == "memory":
+                        result = memory.spoken_recall(command)
+                    elif agent_type == "profile":
+                        result = profile.to_spoken_summary()
+                    else:
+                        # General GPT fallback
+                        messages = context.build_gpt_messages(command)
+                        result   = ai.ask_with_context(messages)
+
+                    print(f"[Vello] Agent result: {result}")
                     context.add("ask_ai", command, result)
+
+                # --- Store important interactions in long-term memory ---
+                if result and result not in ("USE_AI", "Done."):
+                    if intent in ("set_goal", "update_profile", "recall_memory"):
+                        memory.remember(
+                            "episodic",
+                            f"Intent={intent}: {command[:100]}",
+                            context=result[:100],
+                            importance=0.7,
+                        )
 
                 # --- Speak with interrupt support ---
                 if result and result != "USE_AI":
@@ -210,7 +273,7 @@ def main():
                 else:
                     speaker.speak("Done.")
 
-                # --- Update context ---
+                # --- Update session context ---
                 if result and result not in ("USE_AI", "Done."):
                     context.add(intent, command, result)
 
@@ -218,6 +281,7 @@ def main():
 
             except KeyboardInterrupt:
                 print("\n[Vello] Shutting down...")
+                proactive.stop()
                 speaker.speak("Goodbye for now!")
                 return
             except Exception as e:

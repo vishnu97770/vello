@@ -249,6 +249,74 @@ class IntentEngine:
         if re.search(r"\block\b", cmd):
             return "lock_screen"
 
+        # ── Goals ─────────────────────────────────────────────────
+        # Match both raw speech and post-normalizer text
+        if re.search(
+            r"\bi\s+want\s+to\s+(?:become|be|learn|master|get\s+into|start)\b"
+            r"|\bmy\s+goal\s+is\b|\bset\s+(?:a\s+)?goal\b"
+            r"|\bi\s+am\s+trying\s+to\b|\bi\s+'?m\s+trying\s+to\b"
+            r"|\bi\s+want\s+to\s+achieve\b|\bhelp\s+me\s+become\b"
+            r"|\bbecome\s+(?:a\s+|an\s+)?\w+\s*(?:engineer|developer|designer"
+            r"|scientist|analyst|manager|architect|expert|professional)\b"
+            r"|\blearn\s+(?:to\s+)?(?:code|program|python|ml|ai|machine\s+learning)\b"
+            r"|\bmaster\s+\w+\b", cmd
+        ):
+            return "set_goal"
+        if re.search(
+            r"\blist\s+(?:my\s+)?goals?\b|\bshow\s+(?:my\s+)?goals?\b"
+            r"|\bwhat\s+are\s+my\s+goals?\b|\bmy\s+goals?\b", cmd
+        ):
+            return "list_goals"
+        if re.search(
+            r"\bplan\s+for\b|\bcreate\s+(?:a\s+)?plan\b|\baction\s+plan\b"
+            r"|\bhow\s+do\s+i\s+achieve\b|\bsteps\s+to\b|\broadmap\b", cmd
+        ):
+            return "goal_plan"
+        if re.search(
+            r"\bupdate\s+(?:my\s+)?goal\b|\bgoal\s+progress\b"
+            r"|\bi\s+(?:finished|completed|done\s+with)\b", cmd
+        ):
+            return "update_goal"
+
+        # ── User profile / Digital Twin ────────────────────────────
+        if re.search(
+            r"\bmy\s+name\s+is\b|\bcall\s+me\b|\bi\s+am\s+(?:a\s+)?(?:\w+)\s+"
+            r"(?:developer|engineer|designer|student|manager|doctor|teacher|analyst)\b"
+            r"|\bi\s+work\s+as\b|\bi\s+'?m\s+a\b.*(?:developer|engineer|student)\b", cmd
+        ):
+            return "update_profile"
+        if re.search(
+            r"\bwhat\s+do\s+you\s+know\s+about\s+me\b|\btell\s+me\s+about\s+myself\b"
+            r"|\bdo\s+you\s+remember\s+me\b|\bmy\s+profile\b"
+            r"|\bwhat\s+do\s+(?:about\s+)?me\b|\babout\s+me\b", cmd
+        ):
+            return "show_profile"
+
+        # ── Long-term memory recall ────────────────────────────────
+        if re.search(
+            r"\bdo\s+you\s+remember\b|\bwhat\s+did\s+i\s+(?:tell|say|ask)\b"
+            r"|\brecall\b|\bremember\s+when\b|\bwhat\s+did\s+we\s+talk\b", cmd
+        ):
+            return "recall_memory"
+
+        # ── Research agent ─────────────────────────────────────────
+        if re.search(
+            r"\bresearch\b|\btell\s+me\s+about\b|\bexplain\b"
+            r"|\bwhat\s+is\b|\bwhat\s+are\b|\bhow\s+does\b|\bhow\s+do\b"
+            r"|\blearn\s+about\b|\bwho\s+is\b|\bwho\s+was\b"
+            r"|\bcompare\b|\bdifference\s+between\b", cmd
+        ):
+            return "research"
+
+        # ── Coding agent ───────────────────────────────────────────
+        if re.search(
+            r"\bhelp\s+me\s+(?:with\s+)?code\b|\bdebugg?\b|\bfix\s+(?:this|my|the)\s+(?:code|bug|error)\b"
+            r"|\bexplain\s+this\s+code\b|\bhow\s+to\s+code\b|\bcoding\s+help\b"
+            r"|\bwrite\s+(?:a\s+)?(?:function|class|script|program)\b"
+            r"|\bcode\s+review\b|\bwhat\s+does\s+this\s+code\b", cmd
+        ):
+            return "coding_help"
+
         # ── Web search ────────────────────────────────────────────
         if any(w in cmd for w in ["search", "google", "look up", "find"]):
             return "web_search"

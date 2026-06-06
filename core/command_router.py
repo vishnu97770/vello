@@ -59,13 +59,19 @@ class CommandRouter:
         "window_snap_left", "window_snap_right", "window_list",
         "brightness_up", "brightness_down", "brightness_set", "brightness_get",
         "file_search", "file_open", "folder_open", "recent_files",
+        # Intelligence intents
+        "set_goal", "list_goals", "goal_plan", "update_goal",
+        "update_profile", "show_profile", "recall_memory",
+        "research", "coding_help",
     }
 
     def __init__(self, tts=None, context=None, env=None, audio_ctrl=None,
                  music=None, reminders=None, network=None,
                  clipboard=None, packages=None, app_registry=None,
                  stt=None, dbus_media=None, window_manager=None,
-                 file_ops=None, brightness=None):
+                 file_ops=None, brightness=None,
+                 memory=None, profile=None, goal_engine=None,
+                 research_agent=None, coding_agent=None):
         self.tts            = tts or _DummyTTS()
         self.context        = context or _DummyContext()
         self.response       = ResponseGenerator()
@@ -82,6 +88,12 @@ class CommandRouter:
         self.window_manager = window_manager
         self.file_ops       = file_ops
         self.brightness     = brightness
+        # ── New intelligence subsystems ──────────────────────────
+        self.memory         = memory
+        self.profile        = profile
+        self.goal_engine    = goal_engine
+        self.research       = research_agent
+        self.coding         = coding_agent
 
     # ── Primary public API ─────────────────────────────────────────
 
@@ -431,7 +443,112 @@ class CommandRouter:
             self.context.set_pending(target)
             return f"Could you be more specific? What {target} should I use?"
 
+        # ── Goals ─────────────────────────────────────────────────
+        if intent == "set_goal":
+            if not self.goal_engine:
+                return "Goal tracking is not set up yet."
+            return self.goal_engine.set_goal(command)
+
+        if intent == "list_goals":
+            if not self.goal_engine:
+                return "Goal tracking is not set up yet."
+            return self.goal_engine.list_goals()
+
+        if intent == "goal_plan":
+            if not self.goal_engine:
+                return "Goal planning is not set up yet."
+            # Extract goal title from command
+            goal_title = re.sub(
+                r"^(?:plan\s+for|create\s+(?:a\s+)?plan|action\s+plan\s+for"
+                r"|how\s+do\s+i\s+achieve|steps\s+to|roadmap\s+for)\s*",
+                "", command.lower()
+            ).strip() or command
+            return self.goal_engine.get_action_plan(goal_title)
+
+        if intent == "update_goal":
+            if not self.goal_engine:
+                return "Goal tracking is not set up yet."
+            m = re.search(r'\b(\d+)\b', command)
+            pct = re.search(r'(\d+)\s*(?:percent|%)', command)
+            goal_id  = int(m.group(1)) if m else 1
+            progress = int(pct.group(1)) if pct else 100
+            return self.goal_engine.update_progress(goal_id, progress)
+
+        # ── User profile / Digital Twin ────────────────────────────
+        if intent == "update_profile":
+            if not self.profile:
+                return "Profile system is not set up yet."
+            return self._update_profile(command)
+
+        if intent == "show_profile":
+            if not self.profile:
+                return "Profile system is not set up yet."
+            return self.profile.to_spoken_summary()
+
+        # ── Long-term memory recall ────────────────────────────────
+        if intent == "recall_memory":
+            if not self.memory:
+                return "Memory system is not set up yet."
+            # Strip recall prefix to get the actual query
+            query = re.sub(
+                r"^(?:do\s+you\s+remember|what\s+did\s+i\s+(?:tell|say|ask)\s+(?:you\s+)?(?:about)?|"
+                r"recall|remember\s+when|what\s+did\s+we\s+talk\s+about)\s*",
+                "", command.lower()
+            ).strip() or command
+            return self.memory.spoken_recall(query)
+
+        # ── Research agent ─────────────────────────────────────────
+        if intent == "research":
+            if not self.research:
+                return "USE_AI"
+            return self.research.research(command)
+
+        # ── Coding agent ───────────────────────────────────────────
+        if intent == "coding_help":
+            if not self.coding:
+                return "USE_AI"
+            return self.coding.assist(command)
+
         return "I am not sure how to handle that. Please try again."
+
+    # ── Profile update helper ─────────────────────────────────────
+
+    def _update_profile(self, command: str) -> str:
+        cmd = command.lower()
+
+        # Name extraction
+        m = re.search(r"my\s+name\s+is\s+(\w+)", cmd)
+        if not m:
+            m = re.search(r"call\s+me\s+(\w+)", cmd)
+        if m:
+            name = m.group(1).capitalize()
+            self.profile.name = name
+            if self.memory:
+                self.memory.remember("semantic", f"User's name is {name}",
+                                     importance=0.95)
+            return f"Got it! I'll call you {name} from now on."
+
+        # Role extraction
+        m = re.search(
+            r"i(?:\s+am|\s+'m)\s+(?:a\s+)?(.+?)(?:\s+developer|\s+engineer"
+            r"|\s+designer|\s+student|\s+manager|\s+analyst|\s+teacher|\s+doctor)",
+            cmd
+        )
+        role_m = re.search(
+            r"i\s+work\s+as\s+(?:a\s+)?(.+)", cmd
+        )
+        if m or role_m:
+            raw = (m or role_m).group(1).strip()
+            self.profile.set_role(raw)
+            if self.memory:
+                self.memory.remember("semantic", f"User works as {raw}",
+                                     importance=0.8)
+            return f"Noted — I've saved that you work as {raw}."
+
+        # Generic: store the whole statement as a semantic memory
+        if self.memory:
+            self.memory.remember("semantic", command, importance=0.7)
+        return "Got it, I've noted that about you."
 
     # ── Pending action handler ────────────────────────────────────
 
