@@ -24,6 +24,17 @@ requests>=2.31.0
 # Online STT fallback
 SpeechRecognition>=3.10.0
 
+# TTS — neural voice engine (primary)
+kokoro>=0.9.4
+sounddevice>=0.5.0
+soundfile>=0.12.0
+
+# Text normalization for TTS
+num2words>=0.5.14
+
+# Fuzzy wake-word matching (handles Vosk phonetic substitutions for OOV words)
+rapidfuzz>=3.0.0
+
 # Fallback TTS when espeak/piper unavailable
 # pyttsx3>=2.90
 

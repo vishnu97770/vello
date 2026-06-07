@@ -1,4 +1,5 @@
-"""Window management via wmctrl / xdotool (X11 only)."""
+"""Window management — X11 (wmctrl/xdotool) and Wayland (swaymsg/gdbus/ydotool)."""
+import json
 import shutil
 import subprocess
 import re
@@ -13,21 +14,70 @@ class WindowManager:
         self.env     = environment
         self.wmctrl  = shutil.which("wmctrl")
         self.xdotool = shutil.which("xdotool")
+        self.swaymsg = shutil.which("swaymsg")
+        self.ydotool = shutil.which("ydotool")
+        self.gdbus   = shutil.which("gdbus")
+
+        is_x11     = environment.display_server == "x11"
+        is_wayland = environment.display_server == "wayland"
+
         self.available = (
-            environment.display_server == "x11" and
-            bool(self.wmctrl or self.xdotool)
+            (is_x11 and bool(self.wmctrl or self.xdotool)) or
+            (is_wayland and bool(self.swaymsg or self.ydotool or self.gdbus))
         )
 
-    def _wayland_warning(self) -> str:
-        return ("Window control is limited on Wayland. "
-                "This feature works on X11.")
+    # ── Internal helpers ───────────────────────────────────────────
 
-    def _need(self, tool: str) -> str | None:
-        """Return an install-hint string if tool is missing, else None."""
-        if not shutil.which(tool):
-            return (f"{tool} not installed. "
-                    f"Run: sudo apt install {tool}")
-        return None
+    def _is_sway(self) -> bool:
+        """Detect Sway compositor via env var or swaymsg availability."""
+        import os
+        return bool(
+            os.environ.get("SWAYSOCK") or
+            (self.swaymsg and self._sway_cmd("nop"))
+        )
+
+    def _sway_cmd(self, cmd: str) -> bool:
+        if not self.swaymsg:
+            return False
+        try:
+            subprocess.run(
+                ["swaymsg", cmd],
+                check=True, capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _ydotool_key(self, *keys: str) -> bool:
+        """Send key combo via ydotool (Wayland-native input simulation)."""
+        if not self.ydotool:
+            return False
+        try:
+            subprocess.run(
+                ["ydotool", "key"] + list(keys),
+                check=True, capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            return False
+
+    def _gdbus_eval(self, js: str) -> bool:
+        """Run JS in GNOME Shell via gdbus (GNOME Wayland only)."""
+        if not self.gdbus:
+            return False
+        try:
+            subprocess.run(
+                [
+                    "gdbus", "call", "--session",
+                    "--dest", "org.gnome.Shell",
+                    "--object-path", "/org/gnome/Shell",
+                    "--method", "org.gnome.Shell.Eval", js,
+                ],
+                check=True, capture_output=True, timeout=5,
+            )
+            return True
+        except Exception:
+            return False
 
     def _get_active_id(self) -> str | None:
         try:
@@ -39,9 +89,35 @@ class WindowManager:
         except Exception:
             return None
 
+    def _screen_dims(self):
+        m = re.match(r"(\d+)x(\d+)", getattr(self.env, "screen_resolution", "") or "")
+        return (int(m.group(1)), int(m.group(2))) if m else (1920, 1080)
+
+    def _need(self, tool: str) -> str | None:
+        if not shutil.which(tool):
+            return f"{tool} not installed. Run: sudo apt install {tool}"
+        return None
+
+    def _no_wayland_tool(self) -> str:
+        return (
+            "Window control on Wayland needs swaymsg (Sway) or ydotool. "
+            "Install ydotool: sudo apt install ydotool — then start ydotoold."
+        )
+
+    # ── Public API — each method tries Wayland then X11 ───────────
+
     def close_window(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            if self._is_sway() and self._sway_cmd("kill"):
+                return "Window closed"
+            if self._gdbus_eval(
+                "global.display.focus_window.delete(global.get_current_time())"
+            ):
+                return "Window closed"
+            if self._ydotool_key("alt+F4"):
+                return "Window closed"
+            return self._no_wayland_tool()
+
         err = self._need("xdotool")
         if err:
             return err
@@ -56,7 +132,16 @@ class WindowManager:
 
     def minimize_window(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            # Sway: move focused window to scratchpad (equivalent of minimize)
+            if self._is_sway() and self._sway_cmd("move scratchpad"):
+                return "Window minimized"
+            if self._gdbus_eval("global.display.focus_window.minimize()"):
+                return "Window minimized"
+            # GNOME default minimize shortcut: Super+H
+            if self._ydotool_key("super+h"):
+                return "Window minimized"
+            return self._no_wayland_tool()
+
         err = self._need("xdotool")
         if err:
             return err
@@ -71,7 +156,16 @@ class WindowManager:
 
     def maximize_window(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            if self._is_sway() and self._sway_cmd("fullscreen toggle"):
+                return "Window maximized"
+            if self._gdbus_eval(
+                "global.display.focus_window.maximize(Meta.MaximizeFlags.BOTH)"
+            ):
+                return "Window maximized"
+            if self._ydotool_key("super+Up"):
+                return "Window maximized"
+            return self._no_wayland_tool()
+
         for tool in ("xdotool", "wmctrl"):
             err = self._need(tool)
             if err:
@@ -91,7 +185,12 @@ class WindowManager:
 
     def snap_left(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            if self._is_sway() and self._sway_cmd("move left"):
+                return "Window snapped to left"
+            if self._ydotool_key("super+Left"):
+                return "Window snapped to left"
+            return self._no_wayland_tool()
+
         err = self._need("xdotool")
         if err:
             return err
@@ -111,7 +210,12 @@ class WindowManager:
 
     def snap_right(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            if self._is_sway() and self._sway_cmd("move right"):
+                return "Window snapped to right"
+            if self._ydotool_key("super+Right"):
+                return "Window snapped to right"
+            return self._no_wayland_tool()
+
         err = self._need("xdotool")
         if err:
             return err
@@ -131,7 +235,35 @@ class WindowManager:
 
     def list_windows(self) -> str:
         if self.env.display_server == "wayland":
-            return self._wayland_warning()
+            # Sway: parse window tree
+            if self._is_sway() and self.swaymsg:
+                try:
+                    out = subprocess.check_output(
+                        ["swaymsg", "-t", "get_tree"],
+                        text=True, stderr=subprocess.DEVNULL, timeout=5,
+                    )
+                    tree  = json.loads(out)
+                    titles = _extract_sway_titles(tree)
+                    if titles:
+                        count  = len(titles)
+                        listed = ", ".join(titles[:5])
+                        suffix = f" and {count - 5} more" if count > 5 else ""
+                        return (f"You have {count} window"
+                                f"{'s' if count != 1 else ''} open: "
+                                f"{listed}{suffix}")
+                    return "No windows found"
+                except Exception:
+                    pass
+
+            # GNOME Wayland: wmctrl still works for XWayland apps
+            if self.wmctrl:
+                return self._list_via_wmctrl()
+
+            return self._no_wayland_tool()
+
+        return self._list_via_wmctrl()
+
+    def _list_via_wmctrl(self) -> str:
         err = self._need("wmctrl")
         if err:
             return err
@@ -152,10 +284,20 @@ class WindowManager:
             count  = len(titles)
             listed = ", ".join(titles[:5])
             suffix = f" and {count - 5} more" if count > 5 else ""
-            return f"You have {count} window{'s' if count != 1 else ''} open: {listed}{suffix}"
+            return (f"You have {count} window{'s' if count != 1 else ''} "
+                    f"open: {listed}{suffix}")
         except Exception:
             return "Could not list windows"
 
-    def _screen_dims(self):
-        m = re.match(r"(\d+)x(\d+)", getattr(self.env, "screen_resolution", "") or "")
-        return (int(m.group(1)), int(m.group(2))) if m else (1920, 1080)
+
+def _extract_sway_titles(node: dict, titles: list | None = None) -> list:
+    """Recursively pull visible window titles from a Sway tree JSON."""
+    if titles is None:
+        titles = []
+    name = node.get("name") or ""
+    type_ = node.get("type", "")
+    if type_ == "con" and name and name != "root":
+        titles.append(name)
+    for child in node.get("nodes", []) + node.get("floating_nodes", []):
+        _extract_sway_titles(child, titles)
+    return titles

@@ -42,29 +42,60 @@ from core.ai_brain          import AIBrain
 
 
 WAKE_WORDS = [
-    "hey vello", "hey jarvis", "jarvis", "vello", "ok vello", "hey buddy",
-    "hey buddy what's up", "hey buddy whats up",
+    # These are passed only to the background interrupt listener (fuzzy matched).
+    # listen_for_wake_word() uses its own built-in grammar + fuzzy logic;
+    # it does not use this list.
+    "hey vello", "vello", "ok vello",
+    "hey jarvis", "jarvis",
+    "hey buddy",
 ]
+
+# Set True to enable per-frame audio diagnostics (rate, SNR, similarity scores)
+DEBUG_WAKE = False
 
 
 def _background_interrupt_listener(speaker, stt, wake_words,
                                    stop_event, interrupt_event):
     """Listen for wake word during TTS playback to allow interruption."""
+    from vello.stt.vosk_stt import is_wake_word
     while not stop_event.is_set():
         try:
-            heard = stt.listen(timeout=1)
+            heard = stt.listen(timeout=1, quiet=True) if hasattr(stt, "listen") else ""
             if heard:
-                for ww in wake_words:
-                    if ww.lower() in heard.lower():
-                        interrupt_event.set()
-                        speaker.interrupt()
-                        return
+                matched, _ = is_wake_word(heard)
+                if matched:
+                    interrupt_event.set()
+                    speaker.interrupt()
+                    return
         except Exception:
             pass
 
 
+class _GoogleSTT:
+    """Minimal Google STT fallback using SpeechRecognition."""
+
+    def __init__(self):
+        import speech_recognition as sr
+        self._sr = sr
+        self._rec = sr.Recognizer()
+
+    def listen(self, timeout: int = 8) -> str:
+        with self._sr.Microphone() as src:
+            self._rec.adjust_for_ambient_noise(src, duration=0.5)
+            try:
+                audio = self._rec.listen(src, timeout=timeout, phrase_time_limit=15)
+                return self._rec.recognize_google(audio)
+            except self._sr.WaitTimeoutError:
+                return ""
+            except self._sr.UnknownValueError:
+                return ""
+            except Exception as e:
+                print(f"  [GoogleSTT] Error: {e}")
+                return ""
+
+
 def _load_stt():
-    """Load VoskSTT, fall back to Google STT if Vosk model missing."""
+    """Load VoskSTT; fall back to Google STT (via SpeechRecognition) if model missing."""
     try:
         from vello.stt.vosk_stt import VoskSTT
         stt = VoskSTT()
@@ -75,12 +106,10 @@ def _load_stt():
         print("  Falling back to Google Speech Recognition (online).")
         print("  Download the Vosk model for offline operation.")
         print()
-        from voice.speech_to_text import SpeechToText
-        return SpeechToText(), "google"
+        return _GoogleSTT(), "google"
     except Exception as e:
         print(f"  Vosk unavailable ({e}). Using Google STT.")
-        from voice.speech_to_text import SpeechToText
-        return SpeechToText(), "google"
+        return _GoogleSTT(), "google"
 
 
 def main():
@@ -176,10 +205,13 @@ def main():
         if wake_detector.oww_available:
             heard = wake_detector.listen()
         elif hasattr(stt, "listen_for_wake_word"):
-            heard = stt.listen_for_wake_word(WAKE_WORDS)
+            heard = stt.listen_for_wake_word(debug_audio=DEBUG_WAKE)
         else:
-            from audio.wake_word import WakeWordDetector as LegacyDetector
-            heard = LegacyDetector(stt).listen()
+            # Inline keyword fallback — listen once and check for wake words
+            snippet = stt.listen(timeout=3)
+            heard = bool(snippet and any(
+                ww in snippet.lower() for ww in WAKE_WORDS
+            ))
 
         if not heard:
             continue
@@ -239,15 +271,33 @@ def main():
                     elif agent_type == "profile":
                         result = profile.to_spoken_summary()
                     else:
-                        # General GPT fallback
-                        messages = context.build_gpt_messages(command)
-                        result   = ai.ask_with_context(messages)
+                        # General GPT — stream directly into TTS for minimum latency
+                        if ai.enabled:
+                            interrupt_event = threading.Event()
+                            stop_event      = threading.Event()
+                            t = threading.Thread(
+                                target=_background_interrupt_listener,
+                                args=(speaker, stt, WAKE_WORDS,
+                                      stop_event, interrupt_event),
+                                daemon=True,
+                            )
+                            t.start()
+                            stream  = ai.ask_streaming(command)
+                            speaker.speak_streaming(stream,
+                                                    interrupt_event=interrupt_event)
+                            stop_event.set()
+                            t.join(timeout=1)
+                            result = "__streamed__"
+                        else:
+                            messages = context.build_gpt_messages(command)
+                            result   = ai.ask_with_context(messages)
 
-                    print(f"[Vello] Agent result: {result}")
-                    context.add("ask_ai", command, result)
+                    if result != "__streamed__":
+                        print(f"[Vello] Agent result: {result}")
+                    context.add("ask_ai", command, result or "")
 
                 # --- Store important interactions in long-term memory ---
-                if result and result not in ("USE_AI", "Done."):
+                if result and result not in ("USE_AI", "Done.", "__streamed__"):
                     if intent in ("set_goal", "update_profile", "recall_memory"):
                         memory.remember(
                             "episodic",
@@ -256,8 +306,8 @@ def main():
                             importance=0.7,
                         )
 
-                # --- Speak with interrupt support ---
-                if result and result != "USE_AI":
+                # --- Speak with interrupt support (non-streamed results) ---
+                if result and result not in ("USE_AI", "__streamed__"):
                     interrupt_event = threading.Event()
                     stop_event      = threading.Event()
                     t = threading.Thread(
@@ -270,7 +320,7 @@ def main():
                     speaker.speak(result, interrupt_event=interrupt_event)
                     stop_event.set()
                     t.join(timeout=1)
-                else:
+                elif result == "USE_AI":
                     speaker.speak("Done.")
 
                 # --- Update session context ---

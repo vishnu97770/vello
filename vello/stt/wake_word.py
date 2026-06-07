@@ -1,9 +1,9 @@
 """
-OpenWakeWord-based wake word detector.
-Falls back gracefully when openWakeWord or PyAudio is not installed.
+Wake word detector.
+Uses custom OpenWakeWord model if trained, otherwise falls back to
+Vosk keyword spotting which supports "hey vello", "vello", etc. natively.
 """
 import os
-import time
 import logging
 
 logger = logging.getLogger(__name__)
@@ -16,50 +16,45 @@ CUSTOM_MODEL_PATH = os.path.expanduser(
 class WakeWordDetector:
 
     THRESHOLD  = 0.5
-    CHUNK_SIZE = 1280   # required by openWakeWord (80 ms @ 16 kHz)
+    CHUNK_SIZE = 1280   # 80 ms @ 16 kHz (required by openWakeWord)
     RATE       = 16000
     CHANNELS   = 1
 
     def __init__(self):
-        self.oww_available = self._check_oww()
-        if self.oww_available:
-            self._load_model()
+        if os.path.isfile(CUSTOM_MODEL_PATH):
+            self.oww_available = self._try_load_custom()
         else:
-            print("[WakeWord] openWakeWord not installed.")
-            print("[WakeWord] pip install openwakeword")
-            print("[WakeWord] Falling back to Vosk keyword detection.")
+            # No custom "hey vello" model — use Vosk keyword detection instead.
+            # Vosk understands "vello", "hey vello", "jarvis", etc. directly.
+            self.oww_available = False
+            self.model = None
+            print("[WakeWord] No custom model — using Vosk keyword detection.")
+            print("[WakeWord] Say 'Hey Vello' or just 'Vello' to wake up.")
+            print("[WakeWord] Train your own: python scripts/train_wake_word.py")
 
-    def _check_oww(self) -> bool:
+    def _try_load_custom(self) -> bool:
+        """Load custom .onnx model. Returns True on success."""
         try:
-            import openwakeword  # noqa: F401
+            from openwakeword.model import Model
+            self.model = Model(wakeword_model_paths=[CUSTOM_MODEL_PATH])
+            print("[WakeWord] Custom 'Hey Vello' model loaded")
             return True
-        except ImportError:
+        except Exception as e:
+            logger.warning("Could not load custom wake word model: %s", e)
+            self.model = None
             return False
 
-    def _load_model(self):
-        from openwakeword.model import Model
-        if os.path.isfile(CUSTOM_MODEL_PATH):
-            self.model = Model(
-                wakeword_models=[CUSTOM_MODEL_PATH],
-                inference_framework="onnx",
-            )
-            print("[WakeWord] Custom model loaded")
-        else:
-            self.model = Model(inference_framework="onnx")
-            print("[WakeWord] Using pretrained models.")
-            print("[WakeWord] Train custom model: "
-                  "python scripts/train_wake_word.py")
-
     def listen(self, timeout: float | None = None) -> bool:
-        """Stream audio until wake word detected or timeout. Returns bool."""
-        if not self.oww_available:
+        """Stream audio until custom wake word detected. Returns bool."""
+        if not self.oww_available or self.model is None:
             return False
 
         try:
             import pyaudio
             import numpy as np
+            import time
         except ImportError:
-            logger.warning("pyaudio or numpy not installed — WakeWordDetector disabled")
+            logger.warning("pyaudio or numpy not installed")
             return False
 
         pa     = pyaudio.PyAudio()
@@ -76,13 +71,14 @@ class WakeWordDetector:
             while True:
                 if timeout and (time.time() - start) > timeout:
                     return False
-                chunk  = stream.read(self.CHUNK_SIZE, exception_on_overflow=False)
-                audio  = np.frombuffer(chunk, dtype=np.int16)
-                preds  = self.model.predict(audio)
-                for name, scores in preds.items():
-                    if scores and scores[-1] > self.THRESHOLD:
-                        print(f"[WakeWord] Detected: {name} "
-                              f"(score={scores[-1]:.2f})")
+                chunk = stream.read(self.CHUNK_SIZE, exception_on_overflow=False)
+                audio = np.frombuffer(chunk, dtype=np.int16)
+                preds = self.model.predict(audio)
+                for name, score in preds.items():
+                    if isinstance(score, (list, tuple)):
+                        score = score[-1]
+                    if score > self.THRESHOLD:
+                        print(f"[WakeWord] Detected: {name} (score={score:.2f})")
                         return True
         except Exception as e:
             logger.warning("WakeWordDetector listen error: %s", e)
