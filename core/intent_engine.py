@@ -2,6 +2,30 @@ import re
 from vello.nlp.normalizer import Normalizer
 from vello.nlp.fuzzy_matcher import FuzzyMatcher
 
+# Conversational filler that trails after the real command.
+# Strip everything from these words onward before matching.
+# "can you open VSCode because I want to code" → "can you open vscode"
+_TRAILING_FILLER = re.compile(
+    r'\s+(?:because|so\s+that|since|as\s+i|i\s+want\s+to|'
+    r'if\s+you\s+can|if\s+possible|thanks?|thank\s+you)\b.*$',
+    re.IGNORECASE,
+)
+
+# Leading conversational padding before the real verb.
+# "hey can you please open firefox" → "open firefox"
+_LEADING_FILLER = re.compile(
+    r'^(?:hey[,\s]+)?(?:can\s+you\s+)?(?:please\s+)?(?:could\s+you\s+)?'
+    r'(?:would\s+you\s+)?(?:go\s+ahead\s+and\s+)?',
+    re.IGNORECASE,
+)
+
+
+def _strip_filler(text: str) -> str:
+    """Remove conversational padding so intent patterns match cleanly."""
+    text = _TRAILING_FILLER.sub("", text.strip())
+    text = _LEADING_FILLER.sub("", text.strip())
+    return text.strip()
+
 
 class IntentEngine:
     """
@@ -46,6 +70,11 @@ class IntentEngine:
 
         # --- TIER 1: Normalize casual speech ---
         normalized = self.normalizer.normalize(raw_text)
+        # Strip conversational filler before rule matching
+        stripped = _strip_filler(normalized)
+        if stripped != normalized:
+            print(f"[Intent] Filler stripped: '{normalized}' → '{stripped}'")
+            normalized = stripped
         print(f"[Intent] Raw: '{raw_text}'")
         print(f"[Intent] Normalized: '{normalized}'")
 
@@ -104,7 +133,8 @@ class IntentEngine:
             return "music_stop"
         if re.search(r"\bpause\s+music\b|\bpause\b", cmd):
             return "music_pause"
-        if re.search(r"\bresume\s+music\b|\bresume\s+playing\b|\bresume\b", cmd):
+        if re.search(r"\bresume\s+music\b|\bresume\s+playing\b"
+                     r"|\bresume\s+(?:the\s+)?(?:song|track|audio|playback)\b", cmd):
             return "music_resume"
 
         # ── Exit / goodbye ────────────────────────────────────────
@@ -181,11 +211,50 @@ class IntentEngine:
             return "clipboard_write"
 
         # ── File ops (before open_app / web_search to avoid collision) ──
+
+        # Latest/newest download
+        if re.search(
+            r"\b(?:latest|last|newest|most\s+recent)\s+download\b"
+            r"|\blast\s+(?:thing|file)\s+(?:i\s+)?downloaded\b"
+            r"|\bwhat\s+did\s+i\s+(?:just\s+)?download\b"
+            r"|\bopen\s+(?:my\s+)?(?:latest|newest|last)\s+download\b",
+            cmd,
+        ):
+            return "latest_download"
+
+        # Recent documents / files worked on
+        if re.search(
+            r"\brecent\s+(?:documents?|files?|stuff)\b"
+            r"|\bfiles?\s+i\s+(?:worked\s+on|was\s+working\s+on|edited)\b"
+            r"|\bwhat\s+(?:have\s+i|did\s+i)\s+(?:been\s+)?working\s+on\b"
+            r"|\brecently\s+(?:modified|edited|changed)\s+files?\b",
+            cmd,
+        ):
+            return "recent_docs"
+
+        # Generic recent files
         if re.search(r"\brecent\s+files?\b|\bwhat\s+did\s+i\s+work\s+on\b", cmd):
             return "recent_files"
-        if re.search(r"\bfind\s+(?:a\s+)?file\b|\bsearch\s+(?:for\s+)?(?:a\s+)?file\b"
-                     r"|\bwhere\s+is\b", cmd):
-            return "file_search"
+
+        # Open a specific file
+        if re.search(
+            r"\bopen\s+(?:my\s+|the\s+)?(?:file\s+)?\S+\.\S{2,5}\b"  # "open report.pdf"
+            r"|\bopen\s+(?:my|the)\s+\w+\s+(?:file|document|pdf|video|image)\b"
+            r"|\bshow\s+(?:me\s+)?(?:my\s+)?\S+\.\S{2,5}\b",
+            cmd,
+        ):
+            return "open_file"
+
+        # Find / locate a file
+        if re.search(
+            r"\bfind\s+(?:a\s+|my\s+|the\s+)?(?:file\b|pdf\b|photo\b|video\b|document\b)"
+            r"|\bfind\s+my\s+\w+"          # "find my resume", "find my notes"
+            r"|\bwhere\s+is\s+(?:my\s+)?\S+"
+            r"|\blocate\s+\S+"
+            r"|\bsearch\s+(?:for\s+)?(?:a\s+)?file\b",
+            cmd,
+        ):
+            return "find_file"
 
         # ── Multi-step: "open X and do Y" ─────────────────────────
         if " and " in cmd:
@@ -203,10 +272,7 @@ class IntentEngine:
             return "file_open"
 
         # ── Open apps ─────────────────────────────────────────────
-        if re.search(r"\bopen\b|\blaunch\b|\bstart\b", cmd):
-            for app, keywords in self.APP_KEYWORDS.items():
-                if any(kw in cmd for kw in keywords):
-                    return "open_app"
+        if re.search(r"\bopen\b|\blaunch\b|\bstart\b|\brun\b", cmd):
             return "open_app"
 
         # ── Time / date ───────────────────────────────────────────

@@ -59,6 +59,7 @@ class CommandRouter:
         "window_snap_left", "window_snap_right", "window_list",
         "brightness_up", "brightness_down", "brightness_set", "brightness_get",
         "file_search", "file_open", "folder_open", "recent_files",
+        "latest_download", "recent_docs", "find_file", "open_file",
         # Intelligence intents
         "set_goal", "list_goals", "goal_plan", "update_goal",
         "update_profile", "show_profile", "recall_memory",
@@ -221,18 +222,46 @@ class CommandRouter:
                 else "Could not read brightness level"
 
         # ── File operations ───────────────────────────────────────
+
+        if intent == "latest_download":
+            if not self.file_ops:
+                return "File operations are not available."
+            file_type = self._extract_file_type(command)
+            path, response = self.file_ops.get_latest_download(file_type)
+            if path:
+                from vello.file_ops import _xdg_open
+                _xdg_open(path)
+            return response
+
+        if intent == "recent_docs":
+            if not self.file_ops:
+                return "File operations are not available."
+            directory = self._extract_folder_name(command)
+            return self.file_ops.get_recent_files(
+                directory=directory or None, n=5, days=7)
+
+        if intent == "find_file":
+            if not self.file_ops:
+                return "File operations are not available."
+            query = self._extract_file_query(command)
+            return self.file_ops.find_and_open(query)
+
+        if intent in ("open_file", "file_open"):
+            if not self.file_ops:
+                return "File operations are not available."
+            fname = self._extract_file_name(command)
+            return self.file_ops.open_file(fname)
+
         if intent == "file_search":
             query = self._extract_file_query(command)
             return self.file_ops.search_files(query) if self.file_ops \
                 else "File search not available"
-        if intent == "file_open":
-            fname = self._extract_file_name(command)
-            return self.file_ops.open_file(fname) if self.file_ops \
-                else "File open not available"
+
         if intent == "folder_open":
             folder = self._extract_folder_name(command)
             return self.file_ops.open_folder(folder) if self.file_ops \
                 else "Folder open not available"
+
         if intent == "recent_files":
             return self.file_ops.recent_files() if self.file_ops \
                 else "File ops not available"
@@ -567,12 +596,19 @@ class CommandRouter:
     # ── Smart query extractors ────────────────────────────────────
 
     def _extract_app_name(self, command: str) -> str:
-        """Pull the app name from raw command text."""
+        """Pull the app name from raw command text, stripping filler."""
         cmd = command.lower().strip()
-        for prefix in ("open ", "launch ", "start ", "run "):
+        # Strip trailing filler: "open vscode because I want to code" → "open vscode"
+        cmd = re.sub(
+            r'\s+(?:because|so\s+that|since|i\s+want\s+to|for\s+me|please'
+            r'|if\s+you\s+can|thanks?)\b.*$',
+            "", cmd,
+        )
+        for prefix in ("open ", "launch ", "start ", "run ",
+                       "can you open ", "please open ", "can you launch "):
             if cmd.startswith(prefix):
                 return cmd[len(prefix):].strip()
-        m = re.search(r'\b(?:open|launch|start|run)\s+(\S+(?:\s+\S+)?)', cmd)
+        m = re.search(r'\b(?:open|launch|start|run)\s+(.+)', cmd)
         if m:
             return m.group(1).strip()
         return cmd
@@ -612,13 +648,26 @@ class CommandRouter:
             return int(m.group(1))
         return None
 
+    def _extract_file_type(self, command: str) -> str | None:
+        """Extract file type qualifier from command, e.g. 'pdf', 'image', 'video'."""
+        cmd = command.lower()
+        for ftype in ("pdf", "image", "photo", "video", "document",
+                      "spreadsheet", "archive", "zip", "audio", "code"):
+            if ftype in cmd:
+                return ftype
+        return None
+
     def _extract_file_query(self, command: str) -> str:
         """Extract file search term from command."""
         cmd = command.lower().strip()
-        for prefix in ("find file ", "search for file ", "where is ",
-                       "search file ", "find my "):
+        for prefix in ("find file ", "find my ", "search for file ",
+                       "where is ", "search file ", "locate "):
             if prefix in cmd:
                 return cmd.split(prefix, 1)[1].strip()
+        # Strip common verbs and return remainder
+        m = re.search(r'\b(?:find|locate|search\s+for|where\s+is)\s+(?:my\s+|the\s+|a\s+)?(.+)', cmd)
+        if m:
+            return m.group(1).strip()
         return cmd
 
     def _extract_file_name(self, command: str) -> str:
@@ -648,52 +697,46 @@ class CommandRouter:
             self.context.set_pending("app_name")
             return "Which application should I open?"
 
-        app_key = app_name.lower()
+        app_key = app_name.lower().strip()
+        self.context.set_app(app_key)
 
-        # Try dynamic registry first
-        cmd = None
-        if self.app_registry:
-            from vello.app_registry import find_app
-            cmd = find_app(app_key)
+        # Use AppRegistry.launch_app() when available — handles fuzzy matching
+        # and spoken responses ("I don't have X installed") automatically.
+        if self.app_registry and hasattr(self.app_registry, "launch_app"):
+            response = self.app_registry.launch_app(app_key)
+            # Add multi-step follow-up prompts for conversational apps
+            if "opening" in response.lower():
+                if app_key in ("chrome", "google", "browser", "firefox"):
+                    self.context.set_pending("search_query")
+                    return f"{response} What would you like to search?"
+                if app_key in ("terminal", "konsole", "gnome-terminal"):
+                    self.context.set_pending("terminal_command")
+                    return f"{response} What command should I run?"
+                if app_key in ("vscode", "vs code", "code", "visual studio code"):
+                    self.context.set_pending("coding_task")
+                    return f"{response} What are you working on?"
+            return response
 
-        # Fallback to hardcoded map
-        if not cmd:
-            cmd = _HARDCODED_APPS.get(app_key)
-
+        # Fallback: hardcoded map + direct exec
+        cmd = _HARDCODED_APPS.get(app_key)
         if cmd:
             subprocess.Popen(
                 cmd.split(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            self.context.set_app(app_name)
+            return f"Opening {app_name}."
 
-            # Multi-step follow-ups — combine into single response
-            if app_key in ["chrome", "google"]:
-                self.context.set_pending("search_query")
-                return f"Opening {app_name}. What would you like to search?"
-            elif app_key == "terminal":
-                self.context.set_pending("terminal_command")
-                return f"Opening terminal. What command should I run?"
-            elif app_key == "vscode":
-                self.context.set_pending("coding_task")
-                return f"VS Code is ready. What are you coding today?"
-            elif app_key == "libreoffice":
-                self.context.set_pending("work_task")
-                return f"Opening LibreOffice. What would you like to work on?"
-            return f"Opening {app_name}"
-        else:
-            # Try running the app name directly
-            try:
-                subprocess.Popen(
-                    [app_key],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                self.context.set_app(app_name)
-                return f"Opening {app_name}"
-            except FileNotFoundError:
-                return f"I couldn't find {app_name}. Is it installed?"
+        try:
+            subprocess.Popen(
+                [app_key],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return f"Opening {app_name}."
+        except FileNotFoundError:
+            return (f"I don't have {app_name} in my app list. "
+                    f"Is it installed?")
 
     # ── Terminal ──────────────────────────────────────────────────
 

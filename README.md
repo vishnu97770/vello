@@ -1,299 +1,342 @@
-# Vello — Linux-Native AI Voice Assistant
+# Vello — Linux Voice Assistant
 
-![Python 3](https://img.shields.io/badge/Python-3.10%2B-blue)
-![STT](https://img.shields.io/badge/STT-Vosk%20%28Offline%29-green)
-![TTS](https://img.shields.io/badge/TTS-Kokoro%20Neural-purple)
-![AI](https://img.shields.io/badge/AI-xAI%20Grok-orange)
-![Platform](https://img.shields.io/badge/Platform-Linux%20%28X11%20%2B%20Wayland%29-lightgrey)
-![Stage](https://img.shields.io/badge/Stage-ALPHA-yellow)
-
-A fully offline, privacy-first voice assistant built for Linux. Vello understands casual speech, controls your desktop, and falls back to xAI Grok for anything it can't handle locally — all core features work with zero internet connection.
+A fully offline-capable, privacy-first voice assistant built specifically for Linux.  
+Say **"Hey Vello"** and control your desktop, files, apps, music, brightness, network, and more — no cloud required for core commands.
 
 ---
 
-## What is Vello
+## Why Linux?
 
-Vello is a Linux-native voice assistant that runs entirely on your machine. It uses Vosk for offline speech recognition, Kokoro for neural text-to-speech, and xAI Grok as an optional AI brain. Say **"Hey Vello"** or **"Jarvis"** and issue commands in plain English. All system commands, reminders, music, window control, file operations, and device control work with no API key and no data leaving your machine.
+Most voice assistants (Siri, Cortana, Google Assistant) are locked to their platforms or require constant internet.  
+Vello runs locally on Linux:
 
----
-
-## What's New (Latest Upgrade)
-
-| Area | Before | Now |
-|---|---|---|
-| **Wake word** | Vosk exact match (broke on OOV "vello") | Vosk grammar constraint + rapidfuzz fuzzy matching |
-| **TTS engine** | espeak (robotic) | Kokoro neural voice (af_heart, 24 kHz, sentence streaming) |
-| **AI backend** | OpenAI GPT-4o-mini | xAI Grok-3-mini (free tier, same OpenAI SDK) |
-| **Response latency** | ~2000ms (wait for full response) | ~400ms (streams first sentence while generating rest) |
-| **Window control** | X11 only | X11 + Wayland (swaymsg, ydotool, gdbus) |
-| **Personality** | Raw LLM output | Enforced spoken-English style, no filler phrases |
+- **Offline STT** via Vosk (no audio ever leaves your machine for wake word + commands)
+- **Offline TTS** via Kokoro neural voice (~400ms first word, no cloud)
+- **Offline AI fallback** possible — Grok API is optional; all system commands work without it
+- **Native Linux integration** — D-Bus media control, MPRIS, NetworkManager, xdg-open, systemd service, Wayland + X11
 
 ---
 
-## Features
+## What Vello Can Do
 
-| Category | What Vello Can Do |
+| Category | Example Commands |
 |---|---|
-| **App Control** | Open Chrome, launch VS Code, start terminal, open Spotify |
-| **Media** | Play/pause, next/previous track, skip song, now playing (MPRIS2/D-Bus) |
-| **Music** | Play any song by name (mpv + yt-dlp), stop, pause, resume |
-| **System Info** | Battery, CPU, RAM, disk, temperature, uptime, processes |
-| **Volume** | Volume up/down/mute, set exact level |
-| **Brightness** | Brightness up/down, set to percentage |
-| **Window Management** | Close, minimize, maximize, snap left/right, list windows (X11 + Wayland) |
-| **Files** | Find file, open file, open folder, recent files |
-| **Network** | Wi-Fi on/off, list networks, check IP, check internet |
-| **Clipboard** | Copy/paste, read clipboard contents |
-| **Reminders & Timers** | "Remind me in 10 minutes", set timer, list reminders |
-| **Package Management** | Install/remove packages via apt/dnf/pacman/zypper |
-| **Goals & Memory** | Set goals, track progress, persistent conversation memory |
-| **AI Fallback** | Any open-ended question → xAI Grok (requires API key) |
+| **Apps** | "Open Firefox", "Launch VS Code", "Start Spotify" |
+| **Files** | "What's my latest download?", "Find my resume", "Open my documents" |
+| **Music** | "Play music", "Pause", "Next track", "Resume playing" |
+| **Volume** | "Turn volume up", "Mute", "Set volume to 50 percent" |
+| **Brightness** | "Increase brightness", "Dim screen" |
+| **Network** | "Connect to WiFi HomeNetwork", "Disconnect WiFi", "Show network status" |
+| **System** | "Take a screenshot", "Empty trash", "What time is it?" |
+| **Reminders** | "Remind me to call John at 3pm" |
+| **Clipboard** | "Copy this", "Paste that" |
+| **Packages** | "Install VLC", "Update my system" |
+| **AI Chat** | "What's the capital of France?", "Explain quantum computing" |
+| **Goals/Memory** | "Remember that I prefer dark mode", "What do you know about me?" |
 
 ---
 
 ## Tech Stack
 
-| Layer | Technology | Notes |
+| Layer | Technology | Why |
 |---|---|---|
-| **Language** | Python 3.10+ | All application logic |
-| **Wake word** | Vosk keyword spotting | Grammar-constrained + fuzzy match via rapidfuzz |
-| **Wake word (optional)** | OpenWakeWord (ONNX) | Requires training a custom model |
-| **Speech-to-Text** | Vosk (`vosk-model-small-en-us`) | Fully offline, 50 MB model |
-| **Text-to-Speech** | Kokoro v1.0 (`af_heart`, 24 kHz) | Neural voice, sentence-level streaming |
-| **TTS fallbacks** | Piper → espeak-ng → espeak → festival → pyttsx3 | Auto-detected at startup |
-| **AI Brain** | xAI Grok-3-mini | Via OpenAI SDK, `base_url=https://api.x.ai/v1` |
-| **Audio I/O** | PyAudio (mic) + sounddevice (playback) | 16 kHz input, 24 kHz output |
-| **Memory** | SQLite (`~/.vello/memory.db`) | 5 memory types: episodic, semantic, procedural, knowledge, relationship |
-| **Scheduling** | APScheduler | Reminders, timers, proactive suggestions |
-| **Linux integration** | psutil, dbus, subprocess | Volume, brightness, network, window control |
-| **Fuzzy matching** | rapidfuzz | Wake word similarity scoring (threshold 82%) |
-
----
-
-## Requirements
-
-- **OS**: Ubuntu 20.04+ / Fedora 38+ / Arch / Debian 12+ / Linux Mint
-- **Python**: 3.10+
-- **RAM**: 2 GB minimum, 4 GB recommended
-- **Internet**: Only for xAI Grok fallback — all core features work offline
-
----
-
-## Quick Install
-
-```bash
-git clone https://github.com/vishnu97770/vello
-cd vello
-chmod +x install.sh
-./install.sh
-```
-
-The installer detects your distro, installs system packages, downloads the Vosk speech model, and registers a systemd user service.
-
----
-
-## Manual Install
-
-**Step 1 — System packages:**
-
-Ubuntu / Debian / Mint:
-```bash
-sudo apt install python3 python3-pip portaudio19-dev \
-    espeak-ng mpv xclip wl-clipboard wmctrl xdotool \
-    scrot brightnessctl ydotool
-```
-
-Fedora:
-```bash
-sudo dnf install python3 python3-pip portaudio-devel \
-    espeak-ng mpv xclip wmctrl xdotool scrot brightnessctl
-```
-
-Arch / Manjaro:
-```bash
-sudo pacman -S python python-pip portaudio \
-    espeak-ng mpv xclip wmctrl xdotool scrot brightnessctl
-```
-
-**Step 2 — Python packages:**
-```bash
-pip install -r requirements.txt
-```
-
-**Step 3 — Download Vosk speech model (~50 MB):**
-```bash
-mkdir -p ~/.vello/models && cd ~/.vello/models
-wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
-unzip vosk-model-small-en-us-0.15.zip
-mv vosk-model-small-en-us-0.15 vosk-model-small-en-us
-```
-
----
-
-## Configuration
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
-```
-XAI_API_KEY=your_grok_key_here
-```
-
-Get a free key at **https://console.x.ai**
-
-> All system commands, music, reminders, network control, window management, and file operations work without any API key. Grok only activates for open-ended questions like "what is quantum computing?"
-
----
-
-## Running Vello
-
-```bash
-python main.py
-```
-
-As a background service:
-```bash
-systemctl --user start vello
-systemctl --user status vello
-journalctl --user -u vello -f    # live logs
-```
-
-Say **"Hey Vello"**, **"Vello"**, **"Hey Jarvis"**, or **"Jarvis"** to wake it up.
+| **Wake Word** | Vosk (grammar-constrained) + rapidfuzz | Offline; fixes OOV "vello" with phonetic aliases |
+| **STT** | Vosk `vosk-model-small-en-us` | Fully offline, fast, runs on any CPU |
+| **TTS** | Kokoro v1.0 (neural, 24kHz) | ~400ms latency, sounds natural, offline |
+| **TTS fallback** | Piper ONNX → espeak-ng → espeak → pyttsx3 | Progressive degradation, always works |
+| **AI** | xAI Grok (`grok-3-mini`) via OpenAI SDK | Fast, cheap, OpenAI-compatible, optional |
+| **Intent** | Regex → fuzzy keyword → AI fallback | 3-tier; most commands never hit the API |
+| **App lookup** | `.desktop` file scanner + rapidfuzz | 381 entries, covers Snap/Flatpak |
+| **File ops** | Python `pathlib` rglob + rapidfuzz | Time-based queries, type filtering, fuzzy names |
+| **Memory** | MemoryManager (episodic/semantic) | Persists across sessions |
 
 ---
 
 ## Voice Pipeline
 
 ```
-Microphone (PyAudio, 16 kHz, mono, chunk=4000)
-     │
-     ▼
-Wake Word Detection
-  ├─ Vosk grammar-constrained keyword spotting (default)
-  │    Grammar: hey velo, hey bello, hey fellow, hey jarvis, hey buddy...
-  │    Fuzzy match via rapidfuzz (threshold 82%)
-  └─ OpenWakeWord ONNX model (if trained custom model exists)
-     │
-     ▼
-Speech-to-Text (Vosk, offline, vosk-model-small-en-us)
-     │
-     ▼
-Intent Classification (3-tier)
-  1. Rule-based regex patterns (fast, offline)
-  2. Fuzzy keyword matching
-  3. AI fallback (xAI Grok-3-mini)
-     │
-     ▼
-Command Router → Linux subsystem controllers
-  OR
-AI Brain → Grok-3-mini (streaming)
-     │
-     ▼
-Text Preprocessing (markdown strip, abbreviation expand, number normalize)
-     │
-     ▼
-Kokoro TTS (sentence-level streaming, af_heart voice, 24 kHz)
-     │
-     ▼
-Audio Output (sounddevice, interrupt-safe)
+Microphone
+    │
+    ▼
+┌─────────────────────────────────────┐
+│  Wake Word Detection (Vosk)         │
+│  ┌─────────────────────────────┐    │
+│  │ Grammar constraint          │    │
+│  │  ["hey velo", "hey bello",  │    │
+│  │   "hey fellow", "jarvis"…]  │    │
+│  └──────────────┬──────────────┘    │
+│                 │ Vosk result       │
+│  ┌──────────────▼──────────────┐    │
+│  │ rapidfuzz similarity ≥ 82%  │    │
+│  │  vs canonical wake phrases  │    │
+│  └──────────────┬──────────────┘    │
+└─────────────────┼───────────────────┘
+                  │ "Yes?"
+                  ▼
+┌─────────────────────────────────────┐
+│  Command Listen (Vosk free-form)    │
+└──────────────┬──────────────────────┘
+               │ raw text
+               ▼
+┌─────────────────────────────────────┐
+│  IntentEngine — 3-tier classify     │
+│  1. Regex rules (instant)           │
+│  2. Fuzzy keyword matching          │
+│  3. AI classification fallback      │
+└──────────────┬──────────────────────┘
+               │ intent label
+               ▼
+┌─────────────────────────────────────┐
+│  CommandRouter → subsystem calls    │
+│  AppRegistry / FileOps / Audio /    │
+│  Music / Network / Brightness …     │
+└──────────────┬──────────────────────┘
+               │ result text (or USE_AI)
+               ▼
+┌─────────────────────────────────────┐
+│  ExecutiveAgent → specialist agent  │
+│  ResearchAgent / CodingAgent /      │
+│  GoalEngine / AIBrain (Grok)        │
+└──────────────┬──────────────────────┘
+               │ spoken response
+               ▼
+┌─────────────────────────────────────┐
+│  Speaker (Kokoro TTS streaming)     │
+│  Sentence-level streaming:          │
+│  sentence 1 plays while 2-4 synth   │
+└─────────────────────────────────────┘
 ```
-
----
-
-## Voice Commands
-
-| Say | What happens |
-|---|---|
-| `"Hey Vello"` / `"Jarvis"` | Wake word — Vello starts listening |
-| `"Open Chrome"` / `"Launch VS Code"` | Opens the app |
-| `"Volume up"` / `"It's too loud"` | Adjusts volume |
-| `"Brightness up"` / `"Dimmer"` | Adjusts screen brightness |
-| `"Take a screenshot"` | Saves screenshot to ~/Pictures |
-| `"What time is it"` | Speaks current time |
-| `"Battery status"` | Reads battery level and charging state |
-| `"Play Believer"` | Streams song via mpv + yt-dlp |
-| `"Skip song"` / `"Next track"` | MPRIS2 media skip |
-| `"What's playing"` | Reads current track from any player |
-| `"Remind me in 10 minutes to call mom"` | Sets a timed reminder |
-| `"Open Downloads"` | Opens ~/Downloads in file manager |
-| `"Find file notes.txt"` | Searches your home directory |
-| `"What's my IP"` | Reads IP address aloud |
-| `"Snap left"` / `"Snap right"` | Window snapping (X11 + Wayland) |
-| `"Minimize window"` | Minimizes current window (X11 + Wayland) |
-| `"List windows"` | Reads open window titles |
-| `"Shut it all down"` | Powers off the computer |
-| `"Goodbye"` | Vello goes back to sleep |
-| Any question | Falls back to Grok AI (requires `XAI_API_KEY`) |
 
 ---
 
 ## Wake Word Fix
 
-Vosk's small English model does not know the word "Vello" (it's out-of-vocabulary). Without a fix, Vosk substitutes phonetically similar words: "hey the law", "hey there little", "hey yellow", etc.
+**Problem:** "Vello" is not in Vosk's small-EN vocabulary. Vosk would emit a warning and silently ignore it:
+```
+WARNING (VoskAPI): Ignoring word missing in vocabulary: 'vello'
+```
 
-**The fix (already applied):**
-1. **Grammar constraint** — Vosk only searches a restricted set of in-vocab phonetic aliases (`hey velo`, `hey bello`, `hey fellow`, `hey yellow`, `hey cello`, `jarvis`, `hey buddy`, etc.) instead of all of English
-2. **Fuzzy matching** — any Vosk result with ≥82% similarity to a canonical wake phrase is accepted
-3. **Test suite** — `tests/test_wake_word.py` validates 100% true-positive rate, 0% false-positive rate across 27 test cases
+**Solution — two layers:**
 
-Result: wake word accuracy went from ~0% to >95% in normal room conditions.
+### Layer 1: Grammar constraint
+Instead of free-form recognition, Vosk is given a fixed grammar of in-vocab phonetic aliases:
+
+```python
+WAKE_GRAMMAR = [
+    "hey velo",    # /vɛloʊ/ — closest single-word match
+    "hey bello",   # common substitution
+    "hey fellow",  # confirmed mishearing
+    "hey yellow",  # confirmed mishearing
+    "hey cello",   # close ending
+    "hey mellow",  # close ending
+    "velo", "bello", "fellow", "vella",
+    "jarvis", "hey jarvis", "hey buddy",
+    "[unk]",       # lets Vosk emit [unk] instead of forcing a bad match
+]
+```
+
+This constrains Vosk's search space to 14 candidates rather than 200,000+ words, dramatically reducing false positives and false negatives.
+
+### Layer 2: rapidfuzz fuzzy matching
+Every Vosk result is scored against canonical wake phrases using `fuzz.ratio`:
+
+```python
+WAKE_SIMILARITY_THRESHOLD = 82   # balances recall vs false positives
+# hey velo   vs hey vello  → 94  ✅
+# hey bello  vs hey vello  → 89  ✅
+# hey yellow vs hey vello  → 82  ✅ (confirmed Vosk substitution)
+# hello      vs hey vello  → 36  ❌
+# play music vs hey vello  → 22  ❌
+```
+
+**Result:** 100% recall, 0% false positive rate on 27 test cases.
 
 ---
 
-## Neural TTS (Kokoro)
+## Kokoro TTS
 
-Vello uses Kokoro v1.0 as its primary TTS engine — a neural voice model that sounds significantly more natural than espeak.
+Neural text-to-speech running entirely offline:
 
-**Engine fallback chain (auto-detected at startup):**
-```
-Kokoro (neural, 24 kHz) → Piper ONNX → espeak-ng → espeak → festival → pyttsx3 → print_only
-```
-
-**Sentence-level streaming** — instead of generating the full response before speaking, Kokoro synthesizes and plays each sentence as it's extracted from the LLM stream. First audio plays in ~400ms regardless of response length.
+- **Voice:** `af_heart` (US English female)
+- **Sample rate:** 24kHz
+- **First audio:** ~400ms (sentence-level streaming)
+- **Streaming:** Sentence 1 plays while sentences 2–4 are synthesised — no waiting for full-text synthesis
+- **Interrupt:** Wake word during TTS playback immediately stops speech and listens for the next command
+- **Fallback chain:** Kokoro → Piper ONNX → espeak-ng → espeak → festival → pyttsx3 → silent
 
 ---
 
-## Training a Custom Wake Word
+## App Registry
 
-The default setup uses Vosk with phonetic aliases. For a dedicated "Hey Vello" model:
+Scans all standard Linux `.desktop` locations:
+
+```
+/usr/share/applications/
+~/.local/share/applications/
+/var/lib/snapd/desktop/applications/                  ← Snap apps
+~/.local/share/flatpak/exports/share/applications/    ← User Flatpak
+/var/lib/flatpak/exports/share/applications/          ← System Flatpak
+```
+
+**Matching order:** exact → starts-with → contains → rapidfuzz `token_set_ratio ≥ 70%`
+
+**Category aliases** let you say "open a browser" instead of "open firefox":
+
+```python
+"browser":      ["firefox", "google-chrome", "brave-browser", ...]
+"terminal":     ["gnome-terminal", "konsole", "alacritty", ...]
+"file manager": ["nautilus", "dolphin", "thunar", ...]
+```
+
+**Name aliases** handle colloquial names:
+
+```python
+"vscode" / "vs code" → "code"
+"chrome"             → "google-chrome"
+"word"               → "libreoffice --writer"
+"excel"              → "libreoffice --calc"
+```
+
+Cache stored at `~/.vello/app_cache.json`, auto-rebuilt when `.desktop` files change.
+
+---
+
+## File Operations
+
+Natural-language file queries using Python `pathlib` — no hardcoded paths:
+
+| Command | Handler |
+|---|---|
+| "What's my latest download?" | `get_latest_download()` |
+| "What PDF did I download last?" | `get_latest_download("pdf")` |
+| "Show recent documents" | `get_recent_files("documents", days=7)` |
+| "Find my resume" | `find_and_open("resume")` |
+| "Open the presentation" | `find_and_open("presentation")` |
+
+**Supported file types for filtering:** pdf, image, photo, video, document, spreadsheet, presentation, archive, audio, code
+
+**Human-readable times:**
+- < 1 min → "just now"
+- < 1 hour → "3 minutes ago"
+- Same day → "2 hours ago"
+- Yesterday → "yesterday"
+- This week → "on Monday"
+- Older → "on March 15"
+
+**Search order for `find_and_open`:** exact filename → substring → rapidfuzz partial_ratio ≥ 65%
+
+---
+
+## Intelligence Layer
+
+Vello has a multi-agent AI system on top of the rule-based command layer:
+
+```
+User command (intent = USE_AI)
+        │
+        ▼
+  ExecutiveAgent.route(command)
+        │
+    ┌───┴────────────────────────────────┐
+    │ research  │ coding  │ goals │ general│
+    ▼           ▼         ▼       ▼
+ResearchAgent CodingAgent GoalEngine AIBrain
+ (web search)  (code help) (tracking) (Grok)
+```
+
+- **MemoryManager** — Episodic + semantic storage, persists between sessions
+- **UserProfile** — Learns your name, preferences, habits over time
+- **GoalEngine** — Track and follow up on goals you set
+- **ProactiveEngine** — Offers suggestions between interactions
+
+---
+
+## Installation
+
+### Prerequisites
+- Linux (Ubuntu/Debian/Fedora/Arch/OpenSUSE supported by installer)
+- Python 3.10+
+- Microphone + speakers
+
+### Quick Install
 
 ```bash
-python scripts/train_wake_word.py
+git clone https://github.com/vishnu97770/vello.git
+cd vello
+chmod +x install.sh
+./install.sh
 ```
 
-This guides you through recording positive samples, collecting negative samples, and auto-training. The trained model is placed at `~/.vello/models/wakeword/hey_vello.onnx` and Vello detects it automatically on next launch.
+The installer:
+1. Installs system packages (`portaudio19-dev`, `espeak-ng`, `mpv`, `wmctrl`, `xdotool`, etc.)
+2. Creates a Python virtual environment and installs all Python dependencies
+3. Downloads the Vosk model (~50 MB) to `~/.vello/models/`
+4. Creates `.env` from `.env.example`
+5. Installs a systemd user service (`vello.service`)
 
-> Note: Auto-training requires TensorFlow. Manual training via the openWakeWord guide is also supported.
+### Manual Install
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Download Vosk model
+mkdir -p ~/.vello/models
+wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip vosk-model-small-en-us-0.15.zip -d ~/.vello/models/
+mv ~/.vello/models/vosk-model-small-en-us-0.15 ~/.vello/models/vosk-model-small-en-us
+```
 
 ---
 
-## Memory System
+## Configuration
 
-Vello maintains persistent memory across sessions in a SQLite database at `~/.vello/memory.db`:
+Copy `.env.example` to `.env` and fill in:
 
-| Memory Type | What it stores |
-|---|---|
-| Episodic | Past conversations and interactions |
-| Semantic | Facts you've told Vello |
-| Procedural | How-to knowledge |
-| Knowledge | General information recalled |
-| Relationship | Context about people you mention |
+```env
+# Required for AI features (conversations, research, coding help)
+# Get a free key at: https://console.x.ai
+XAI_API_KEY=your_key_here
 
-User profile (name, role, skills, goals, habits) is stored at `~/.vello/profile.json`.
+# Optional: override wake word (default is "hey vello")
+# VELLO_WAKE_WORD=hey vello
+```
+
+All system commands (apps, files, music, volume, brightness, network, etc.) work **without** an API key. The API is only needed for open-ended conversation and AI agent tasks.
 
 ---
 
-## Wayland Support
+## Running
 
-Window control works on both X11 and Wayland:
+```bash
+# Direct run
+source venv/bin/activate
+python main.py
 
-| Operation | X11 | Sway (Wayland) | GNOME Wayland | Other Wayland |
-|---|---|---|---|---|
-| Minimize | wmctrl / xdotool | swaymsg scratchpad | gdbus eval | ydotool Super+H |
-| Snap left/right | xdotool | swaymsg move | — | ydotool Super+Arrow |
-| List windows | wmctrl -l | swaymsg get_tree | — | — |
+# Via systemd (starts at login, runs in background)
+systemctl --user start vello
+systemctl --user enable vello   # auto-start on login
+
+# Check logs
+journalctl --user -u vello -f
+```
+
+---
+
+## Wayland vs X11
+
+| Feature | X11 | Wayland |
+|---|---|---|
+| Screenshot (`scrot`) | ✅ | ❌ (use `gnome-screenshot`) |
+| Window focus (`xdotool`) | ✅ | ❌ (limited) |
+| Clipboard (`xclip`) | ✅ | ❌ |
+| Clipboard (`wl-clipboard`) | ❌ | ✅ |
+| App launching (`xdg-open`) | ✅ | ✅ |
+| Media control (D-Bus/MPRIS) | ✅ | ✅ |
+| Volume control (amixer/pactl) | ✅ | ✅ |
+
+Vello detects `$WAYLAND_DISPLAY` at startup and picks the right backend automatically.
 
 ---
 
@@ -301,87 +344,114 @@ Window control works on both X11 and Wayland:
 
 ```
 vello/
-├── main.py                  # Entry point — wake loop → conversation loop
-├── requirements.txt         # Python dependencies
-├── .env.example             # Config template (copy to .env)
-├── install.sh               # Distro-aware installer
+├── main.py                    # Entry point — boot sequence + main loop
+├── install.sh                 # One-shot installer (apt/dnf/pacman/zypper)
+├── requirements.txt           # Python dependencies
+├── .env.example               # Config template
 │
-├── core/                    # Core pipeline
-│   ├── ai_brain.py          # xAI Grok LLM integration (streaming)
-│   ├── intent_engine.py     # 3-tier intent classification
-│   ├── command_router.py    # Dispatches intents to subsystems
-│   └── context_manager.py   # Legacy (superseded by vello/context.py)
+├── core/
+│   ├── intent_engine.py       # 3-tier intent classification (regex→fuzzy→AI)
+│   ├── command_router.py      # Routes intents to subsystem handlers
+│   └── ai_brain.py            # Grok (xAI) wrapper with streaming support
 │
-├── vello/                   # All subsystems
+├── vello/
+│   ├── app_registry.py        # .desktop scanner, fuzzy app lookup, JSON cache
+│   ├── file_ops.py            # File queries: latest download, recent, fuzzy find
+│   ├── audio_control.py       # Volume: amixer/pactl/pulseaudio
+│   ├── brightness.py          # Screen brightness: xrandr/brightnessctl
+│   ├── music_player.py        # mpv-based music playback
+│   ├── dbus_control.py        # MPRIS2 media control (D-Bus)
+│   ├── network_control.py     # NetworkManager / nmcli
+│   ├── clipboard.py           # xclip (X11) / wl-clipboard (Wayland)
+│   ├── package_manager.py     # apt/dnf/pacman wrapper
+│   ├── window_manager.py      # wmctrl / xdotool
+│   ├── reminders.py           # APScheduler-based reminder system
+│   ├── personality.py         # System prompt + response cleanup
+│   ├── environment.py         # Detects X11/Wayland, display server, distro
+│   ├── context.py             # Session conversation context
+│   ├── memory.py              # Episodic + semantic long-term memory
+│   ├── profile.py             # User profile (name, preferences)
+│   ├── goals.py               # Goal tracking engine
+│   ├── agents.py              # ExecutiveAgent, ResearchAgent, CodingAgent
+│   ├── proactive.py           # Background suggestion engine
+│   │
 │   ├── stt/
-│   │   ├── vosk_stt.py      # Vosk STT + wake word detection + fuzzy matching
-│   │   └── wake_word.py     # OpenWakeWord ONNX detector
-│   ├── tts/
-│   │   ├── speaker.py       # Multi-engine TTS with sentence streaming
-│   │   └── preprocessor.py  # Text normalization before TTS
-│   ├── personality.py       # System prompt + response cleaning
-│   ├── memory.py            # SQLite memory manager
-│   ├── profile.py           # User profile ("Digital Twin")
-│   ├── context.py           # Session conversation context
-│   ├── agents/              # Executive, Research, Coding agents
-│   ├── goals/               # Goal engine + progress tracking
-│   ├── proactive.py         # Timed suggestion engine
-│   ├── audio_control.py     # Volume (PipeWire/PulseAudio/ALSA)
-│   ├── brightness.py        # Screen brightness control
-│   ├── window_manager.py    # X11 + Wayland window control
-│   ├── music_player.py      # mpv + yt-dlp music playback
-│   ├── reminders.py         # APScheduler reminder system
-│   ├── network_control.py   # nmcli Wi-Fi control
-│   ├── clipboard.py         # xclip / wl-clipboard
-│   ├── file_ops.py          # File search and open
-│   ├── dbus_control.py      # MPRIS2 media via D-Bus
-│   ├── package_manager.py   # apt/dnf/pacman/zypper wrapper
-│   └── app_registry.py      # .desktop file scanner
+│   │   ├── vosk_stt.py        # Vosk STT + wake word (grammar + fuzzy)
+│   │   └── wake_word.py       # OpenWakeWord detector (optional)
+│   │
+│   └── tts/
+│       ├── speaker.py         # Multi-engine TTS with sentence streaming
+│       ├── preprocessor.py    # Text cleanup + sentence splitting for TTS
+│       └── piper_setup.py     # Optional Piper ONNX voice download
 │
 ├── scripts/
-│   └── train_wake_word.py   # Custom wake word training flow
+│   ├── install_service.py     # systemd user service installer
+│   └── train_wake_word.py     # Custom wake word training helper
 │
 ├── tests/
-│   └── test_wake_word.py    # Wake word accuracy test suite (27 cases)
+│   └── test_wake_word.py      # 27-case wake word test suite
 │
 └── docs/
-    └── VELLO_ARCHITECTURE.md  # Full technical architecture report
+    ├── VELLO_ARCHITECTURE.md       # Full technical architecture reference
+    └── VELLO_PROJECT_CONTEXT.md    # Context doc for AI chat sessions
 ```
 
 ---
 
-## Distro Notes
+## Dependencies
 
-- **Ubuntu 22.04+**: Fully supported. PipeWire detected automatically.
-- **Fedora 38+**: Works out of the box. Use `dnf` path in installer.
-- **Arch / Manjaro**: Install `espeak-ng` (not `espeak`). All features supported.
-- **Debian 12**: Tested on Bookworm. Some packages may need `contrib` enabled.
-- **Linux Mint**: Treated as Ubuntu — same `apt` package path.
-- **Sway (Wayland)**: Full window control support via `swaymsg`.
-- **GNOME Wayland**: Partial window control via `gdbus` + `ydotool`.
+| Package | Purpose |
+|---|---|
+| `vosk` | Offline speech recognition |
+| `pyaudio` | Microphone input |
+| `kokoro` | Neural TTS (primary voice) |
+| `sounddevice` / `soundfile` | Kokoro audio playback |
+| `openai` | Grok API client (OpenAI-compatible SDK) |
+| `rapidfuzz` | Fuzzy matching for wake word, apps, files |
+| `python-dotenv` | `.env` configuration loading |
+| `APScheduler` | Reminder scheduling |
+| `psutil` | System info (CPU, memory, battery) |
+| `requests` | HTTP for research agent |
+| `SpeechRecognition` | Google STT fallback |
+| `num2words` | Number-to-word conversion for TTS |
+| `numpy` | Audio signal processing |
 
 ---
 
 ## Debugging
 
-Enable audio diagnostics to see wake word similarity scores in real time:
-
-```python
-# In main.py, set:
+```bash
+# Enable per-frame audio diagnostics for wake word
+# Edit main.py line 54:
 DEBUG_WAKE = True
-```
 
-This prints per-utterance lines like:
-```
-[WakeWord] Vosk heard: 'hey velo' | similarity=94% | WAKE ✓
-[WAKE]  Candidate: 'hey velo' | Similarity: 94% | Decision: WAKE
+# Test wake word matching directly
+python -m pytest tests/test_wake_word.py -v
+
+# Check what apps are in the registry
+python -c "
+from vello.app_registry import AppRegistry
+reg = AppRegistry()
+print(f'{len(reg._registry)} apps loaded')
+print(reg.find('firefox'))
+"
+
+# Check TTS engine selected at startup
+python main.py 2>&1 | grep '\[TTS\]'
 ```
 
 ---
 
-## Contributing
+## Status
 
-Bug reports and pull requests are welcome. Please open an issue before making large changes. See the full technical architecture at [docs/VELLO_ARCHITECTURE.md](docs/VELLO_ARCHITECTURE.md) for a deep dive into the codebase.
+**Stage: ALPHA** — fully working end-to-end pipeline. Known items:
+
+- [ ] AI agents (`agents.py`) still use `OPENAI_API_KEY` env var — should be `XAI_API_KEY`
+- [ ] `numpy` should be pinned explicitly in `requirements.txt`
+- [ ] Stale test fixtures in `tests/` reference old API shapes
+- [ ] `install.sh` step 5 still mentions "OpenAI API key" in echo text
+
+Core voice commands, wake word detection, TTS, app launching, and file operations are stable.
 
 ---
 
